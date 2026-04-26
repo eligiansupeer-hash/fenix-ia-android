@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.collectLatest
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProjectListScreen(
-    onNavigateToChat: (chatId: String) -> Unit,
+    onNavigateToProject: (projectId: String) -> Unit,
     onNavigateToSettings: () -> Unit,
     viewModel: ProjectViewModel = hiltViewModel()
 ) {
@@ -31,8 +31,8 @@ fun ProjectListScreen(
     LaunchedEffect(Unit) {
         viewModel.effect.collectLatest { effect ->
             when (effect) {
-                is ProjectEffect.NavigateToProject -> { /* Navegamos a chat */ }
-                is ProjectEffect.ShowError -> { /* Mostrar snackbar */ }
+                is ProjectEffect.NavigateToProject -> onNavigateToProject(effect.projectId)
+                is ProjectEffect.ShowError -> { /* TODO: snackbar */ }
             }
         }
     }
@@ -52,9 +52,7 @@ fun ProjectListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showCreateDialog = true }
-            ) {
+            FloatingActionButton(onClick = { showCreateDialog = true }) {
                 Icon(Icons.Default.Add, contentDescription = "Nuevo proyecto")
             }
         }
@@ -127,10 +125,7 @@ private fun ProjectCard(
                 }
             }
             IconButton(onClick = onDelete) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Eliminar proyecto"
-                )
+                Icon(Icons.Default.Delete, contentDescription = "Eliminar proyecto")
             }
         }
     }
@@ -170,9 +165,7 @@ private fun CreateProjectDialog(
             TextButton(
                 onClick = { if (name.isNotBlank()) onCreate(name, prompt) },
                 enabled = name.isNotBlank()
-            ) {
-                Text("Crear")
-            }
+            ) { Text("Crear") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancelar") }

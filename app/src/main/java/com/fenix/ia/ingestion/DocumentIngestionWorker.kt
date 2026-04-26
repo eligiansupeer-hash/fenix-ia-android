@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import com.fenix.ia.data.local.db.dao.DocumentDao
+import com.fenix.ia.data.local.db.entities.DocumentEntity
 import com.fenix.ia.data.local.objectbox.RagEngine
+import com.fenix.ia.domain.model.DocumentNode
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -15,15 +17,14 @@ import kotlinx.coroutines.withContext
  * Ejecuta en Dispatchers.IO — NUNCA en Main Thread.
  *
  * Flujo:
- *   1. Lee DocumentNode de Room por documentId
- *   2. Extrae texto (PDF → PdfTextExtractor, DOCX → DocxTextExtractor)
- *   3. Indexa en ObjectBox via RagEngine (chunking 750t / overlap 75t)
+ *   1. Lee DocumentEntity de Room por documentId
+ *   2. Extrae texto (PDF → PdfTextExtractor, DOCX → DocxTextExtractor, text/* → bufferedReader)
+ *   3. Indexa en ObjectBox via RagEngine (chunking 750t / overlap 75t, lotes de 10)
  *   4. Marca isIndexed = true en Room
  *
- * RESTRICCIÓN R-04: Extractores procesan archivos en streaming, no carga completa.
- * RESTRICCIÓN R-06: bitmap.recycle() en PdfTextExtractor.extractText() — finally.
- *
- * Retry policy: exponential backoff, máx 3 reintentos (definidos en WorkRequest).
+ * RESTRICCIÓN R-04: Extractores procesan archivos en streaming, nunca carga completa en heap.
+ * RESTRICCIÓN R-06: bitmap.recycle() garantizado en PdfTextExtractor.extractText() — finally.
+ * Retry policy: exponential backoff, máx 3 reintentos.
  */
 @HiltWorker
 class DocumentIngestionWorker @AssistedInject constructor(
@@ -46,15 +47,13 @@ class DocumentIngestionWorker @AssistedInject constructor(
         }
 
         runCatching {
-            val entity = documentDao.getDocumentById(documentId)
+            val entity: DocumentEntity = documentDao.getDocumentById(documentId)
                 ?: return@withContext Result.failure(
                     workDataOf("error" to "Documento no encontrado: $documentId")
                 )
 
-            // Modelo de dominio para los extractores
             val document = entity.toDomain()
 
-            // Extracción de texto según tipo MIME
             val rawText = when {
                 entity.mimeType.contains("pdf", ignoreCase = true) ->
                     pdfExtractor.extractText(document)
@@ -65,7 +64,6 @@ class DocumentIngestionWorker @AssistedInject constructor(
                 entity.mimeType.startsWith("text/") ->
                     extractPlainText(document)
                 else -> {
-                    // Tipo no soportado — marca como indexado vacío para no reintentar
                     documentDao.markAsIndexed(documentId)
                     return@withContext Result.success(
                         workDataOf("info" to "Tipo MIME no soportado: ${entity.mimeType}")
@@ -78,33 +76,24 @@ class DocumentIngestionWorker @AssistedInject constructor(
                 return@withContext Result.success(workDataOf("info" to "Documento vacío"))
             }
 
-            // Indexación vectorial en ObjectBox (chunking lote de 10 — control de RAM)
             ragEngine.indexDocument(
                 projectId = projectId,
                 documentNodeId = documentId,
                 text = rawText
             )
 
-            // Actualiza estado en Room
             documentDao.markAsIndexed(documentId)
 
         }.onFailure { e ->
-            // Propaga fallo para reintento exponencial de WorkManager
-            return@withContext Result.retry().also {
-                // Log estructurado para depuración
-                android.util.Log.e(TAG, "Ingesta fallida para $documentId", e)
-            }
+            android.util.Log.e(TAG, "Ingesta fallida para $documentId", e)
+            return@withContext Result.retry()
         }
 
         Result.success(workDataOf("documentId" to documentId))
     }
 
-    /**
-     * Lee texto plano directamente del ContentResolver.
-     * Limitado a MAX_PLAIN_TEXT_BYTES para evitar OOM en archivos grandes.
-     */
-    private fun extractPlainText(document: com.fenix.ia.domain.model.DocumentNode): String {
-        val uri = document.uri.toUri()
+    private fun extractPlainText(document: DocumentNode): String {
+        val uri = android.net.Uri.parse(document.uri)
         return applicationContext.contentResolver.openInputStream(uri)?.use { stream ->
             stream.bufferedReader().readText().take(MAX_PLAIN_TEXT_CHARS)
         } ?: ""
@@ -114,12 +103,8 @@ class DocumentIngestionWorker @AssistedInject constructor(
         const val KEY_DOCUMENT_ID = "document_id"
         const val KEY_PROJECT_ID = "project_id"
         private const val TAG = "DocumentIngestionWorker"
-        private const val MAX_PLAIN_TEXT_CHARS = 200_000 // ~150 KB texto
+        private const val MAX_PLAIN_TEXT_CHARS = 200_000
 
-        /**
-         * Construye la WorkRequest con política de reintento exponencial.
-         * Constraints: requiere almacenamiento no bajo.
-         */
         fun buildRequest(documentId: String, projectId: Long): OneTimeWorkRequest {
             val data = workDataOf(
                 KEY_DOCUMENT_ID to documentId,
@@ -143,18 +128,15 @@ class DocumentIngestionWorker @AssistedInject constructor(
     }
 }
 
-// Extension para convertir la entidad Room al modelo de dominio dentro del worker
-private fun com.fenix.ia.data.local.db.entity.DocumentNodeEntity.toDomain() =
-    com.fenix.ia.domain.model.DocumentNode(
-        id = id,
-        projectId = projectId,
-        name = name,
-        mimeType = mimeType,
-        uri = uri,
-        sizeBytes = sizeBytes,
-        isIndexed = isIndexed,
-        isChecked = isChecked,
-        createdAt = createdAt
-    )
-
-private fun String.toUri() = android.net.Uri.parse(this)
+// ── Mapper local ────────────────────────────────────────────────────────────
+private fun DocumentEntity.toDomain() = DocumentNode(
+    id = id,
+    projectId = projectId,
+    name = name,
+    uri = uri,
+    mimeType = mimeType,
+    sizeBytes = sizeBytes,
+    isIndexed = isIndexed,
+    isChecked = isChecked,
+    createdAt = createdAt
+)

@@ -13,7 +13,7 @@ import com.fenix.ia.data.local.db.entities.*
         DocumentEntity::class
     ],
     version = 1,
-    exportSchema = true
+    exportSchema = false
 )
 abstract class FenixDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao

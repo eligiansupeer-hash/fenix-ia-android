@@ -4,8 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
-    // ObjectBox plugin se agrega manualmente cuando se configure ObjectBox SDK
-    // id("io.objectbox")
+    alias(libs.plugins.objectbox) // ObjectBox 4.0 — genera MyObjectBox + inyecta objectbox-android
 }
 
 android {
@@ -95,6 +94,13 @@ dependencies {
 
     // JavaScriptSandbox
     implementation(libs.javascriptengine)
+
+    // TensorFlow Lite — modelo MiniLM-L6-v2 (384-dim embeddings para RAG)
+    // NOTA: requiere assets/minilm_l6_v2_quantized.tflite (~22 MB)
+    implementation(libs.tensorflow.lite)
+
+    // ObjectBox — runtime explícito como fallback si el plugin no lo inyecta
+    implementation(libs.objectbox.android)
 
     // -----------------------------------------------------------------------
     // Tests

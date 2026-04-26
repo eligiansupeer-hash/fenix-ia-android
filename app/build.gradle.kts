@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization) // @Serializable en DynamicUiSchema.kt
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
     alias(libs.plugins.objectbox) // ObjectBox 4.0 — genera MyObjectBox + inyecta objectbox-android
@@ -86,7 +87,7 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.logging)
 
-    // Serialización
+    // Serialización Kotlin
     implementation(libs.kotlinx.serialization.json)
 
     // WorkManager (ingesta asíncrona)
@@ -96,7 +97,7 @@ dependencies {
     implementation(libs.javascriptengine)
 
     // TensorFlow Lite — modelo MiniLM-L6-v2 (384-dim embeddings para RAG)
-    // NOTA: requiere assets/minilm_l6_v2_quantized.tflite (~22 MB)
+    // NOTA: requiere assets/minilm_l6_v2_quantized.tflite (~22 MB) — ver ASSET_README.md
     implementation(libs.tensorflow.lite)
 
     // ObjectBox — runtime explícito como fallback si el plugin no lo inyecta

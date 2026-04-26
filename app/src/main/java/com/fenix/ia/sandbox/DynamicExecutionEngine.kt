@@ -1,9 +1,9 @@
 package com.fenix.ia.sandbox
 
 import android.content.Context
+import androidx.javascriptengine.IsolateStartupParameters
 import androidx.javascriptengine.JavaScriptIsolate
 import androidx.javascriptengine.JavaScriptSandbox
-import androidx.javascriptengine.IsolateStartupParameters
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.await
@@ -42,10 +42,9 @@ class DynamicExecutionEngine @Inject constructor(
                 throw SecurityException("PolicyEngine rechazó el script: ${policyResult.reason}")
             }
 
-            // Escapa el JSON para inyección segura como literal JS
+            // Escapa el JSON para inyección segura como literal JS (R-05)
             val safeJson = JSONObject(inputJson).toString()
 
-            // R-05: datos inyectados como literal, nunca como interpolación de código
             val wrappedScript = buildString {
                 append("const inputJson = ")
                 append(safeJson)
@@ -54,13 +53,18 @@ class DynamicExecutionEngine @Inject constructor(
                 append(" })();")
             }
 
-            val sandbox = JavaScriptSandbox.createConnectedInstanceAsync(context).await()
+            // ListenableFuture.await() — de kotlinx-coroutines-guava
+            val sandbox: JavaScriptSandbox =
+                JavaScriptSandbox.createConnectedInstanceAsync(context).await()
+
             sandbox.use { sb ->
                 val params = IsolateStartupParameters().apply {
                     maxHeapSizeBytes = MAX_HEAP_MB * 1024 * 1024
                 }
+                // createIsolate(params) es síncrono — devuelve JavaScriptIsolate directamente
                 val isolate: JavaScriptIsolate = sb.createIsolate(params)
                 isolate.use { iso ->
+                    // evaluateJavaScriptAsync → ListenableFuture<String> → .await()
                     iso.evaluateJavaScriptAsync(wrappedScript).await()
                 }
             }

@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -13,9 +15,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.ApiProvider
+import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.model.Message
 import com.fenix.ia.domain.model.MessageRole
 import kotlinx.coroutines.flow.collectLatest
@@ -30,9 +34,16 @@ fun ChatScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
+    var showDocPanel by remember { mutableStateOf(false) }
 
     LaunchedEffect(chatId) {
         viewModel.loadChat(chatId, projectId)
+    }
+
+    LaunchedEffect(uiState.messages.size) {
+        if (uiState.messages.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.messages.size - 1)
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -43,8 +54,8 @@ fun ChatScreen(
                         listState.animateScrollToItem(uiState.messages.size - 1)
                     }
                 }
-                is ChatEffect.ShowError -> { /* Mostrar snackbar */ }
-                is ChatEffect.OpenFilePicker -> { /* Abrir selector */ }
+                is ChatEffect.ShowError -> { /* TODO snackbar */ }
+                is ChatEffect.OpenFilePicker -> { /* handled in ProjectDetail */ }
             }
         }
     }
@@ -54,13 +65,31 @@ fun ChatScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("Chat")
+                        Text("Chat", style = MaterialTheme.typography.titleMedium)
                         uiState.activeProvider?.let { provider ->
                             Text(
                                 text = "⚡ ${provider.name}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                    }
+                },
+                actions = {
+                    // Botón para mostrar/ocultar panel de documentos de contexto
+                    BadgedBox(
+                        badge = {
+                            val checkedCount = uiState.documents.count { it.isChecked }
+                            if (checkedCount > 0) Badge { Text("$checkedCount") }
+                        }
+                    ) {
+                        IconButton(onClick = { showDocPanel = !showDocPanel }) {
+                            Icon(Icons.Default.AttachFile, contentDescription = "Documentos de contexto")
                         }
                     }
                 }
@@ -74,28 +103,103 @@ fun ChatScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(padding)
         ) {
-            items(uiState.messages, key = { it.id }) { message ->
-                MessageBubble(
-                    message = message,
-                    modifier = Modifier.testTag(
-                        if (message.role == MessageRole.ASSISTANT) "assistant_message" else "user_message"
-                    )
+            // Panel de documentos de contexto (desplegable)
+            if (showDocPanel) {
+                DocumentContextPanel(
+                    documents = uiState.documents,
+                    onToggle = { docId ->
+                        viewModel.processIntent(ChatIntent.ToggleDocumentCheckpoint(docId))
+                    }
                 )
+                Divider()
             }
-            if (uiState.isStreaming) {
-                item {
-                    StreamingIndicator(
-                        buffer = uiState.streamingBuffer,
-                        provider = uiState.activeProvider,
-                        modifier = Modifier.testTag("streaming_indicator")
+
+            // Lista de mensajes
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (uiState.messages.isEmpty() && !uiState.isStreaming) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillParentMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "Enviá un mensaje para comenzar",
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                    }
+                }
+                items(uiState.messages, key = { it.id }) { message ->
+                    MessageBubble(
+                        message = message,
+                        modifier = Modifier.testTag(
+                            if (message.role == MessageRole.ASSISTANT) "assistant_message" else "user_message"
+                        )
+                    )
+                }
+                if (uiState.isStreaming) {
+                    item {
+                        StreamingIndicator(
+                            buffer = uiState.streamingBuffer,
+                            provider = uiState.activeProvider,
+                            modifier = Modifier.testTag("streaming_indicator")
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DocumentContextPanel(
+    documents: List<DocumentNode>,
+    onToggle: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            "Contexto activo",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        if (documents.isEmpty()) {
+            Text(
+                "No hay documentos en este proyecto",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+        } else {
+            documents.forEach { doc ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Checkbox(
+                        checked = doc.isChecked,
+                        onCheckedChange = { onToggle(doc.id) },
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Text(
+                        text = doc.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
@@ -116,14 +220,14 @@ private fun MessageBubble(message: Message, modifier: Modifier = Modifier) {
                 containerColor = if (isUser)
                     MaterialTheme.colorScheme.primary
                 else
-                    MaterialTheme.colorScheme.surface
+                    MaterialTheme.colorScheme.surfaceVariant
             )
         ) {
             Text(
                 text = message.content,
                 modifier = Modifier.padding(12.dp),
                 color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -135,18 +239,28 @@ private fun StreamingIndicator(
     provider: ApiProvider?,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.padding(8.dp)) {
-        provider?.let {
-            Text(
-                text = "⚡ Generando con $it...",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-        if (buffer.isNotEmpty()) {
-            Text(text = buffer, style = MaterialTheme.typography.bodyMedium)
-        } else {
-            DotsLoadingIndicator()
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Card(
+            modifier = Modifier.widthIn(max = 300.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                provider?.let {
+                    Text(
+                        text = "⚡ ${it.name}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                if (buffer.isNotEmpty()) {
+                    Text(text = buffer, style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    DotsLoadingIndicator()
+                }
+            }
         }
     }
 }
@@ -155,7 +269,7 @@ private fun StreamingIndicator(
 private fun DotsLoadingIndicator() {
     val infiniteTransition = rememberInfiniteTransition(label = "dots")
     val alpha by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
+        initialValue = 0.3f, targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(600), repeatMode = RepeatMode.Reverse
         ), label = "dots_alpha"

@@ -23,4 +23,7 @@ abstract class RepositoryModule {
 
     @Binds @Singleton
     abstract fun bindApiKeyRepository(impl: ApiKeyRepositoryImpl): ApiKeyRepository
+
+    @Binds @Singleton
+    abstract fun bindDocumentRepository(impl: DocumentRepositoryImpl): DocumentRepository
 }

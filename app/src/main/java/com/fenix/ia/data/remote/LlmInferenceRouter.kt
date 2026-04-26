@@ -25,6 +25,9 @@ class LlmInferenceRouter @Inject constructor(
     companion object {
         private const val LARGE_CONTEXT_TOKEN_THRESHOLD = 32_000
         private const val MAX_RETRY_ATTEMPTS = 3
+        // Límite de línea SSE: 1 MB cubre cualquier respuesta JSON de token.
+        // Ktor 2.3+ requiere el parámetro limit explícito en readUTF8Line.
+        private const val SSE_LINE_LIMIT = 1024 * 1024
     }
 
     fun selectProvider(
@@ -80,7 +83,8 @@ class LlmInferenceRouter @Inject constructor(
                     }
                     val channel = response.bodyAsChannel()
                     while (!channel.isClosedForRead) {
-                        val line = channel.readUTF8Line() ?: break
+                        // Ktor 2.3+ requiere limit explícito en readUTF8Line
+                        val line = channel.readUTF8Line(limit = SSE_LINE_LIMIT) ?: break
                         if (line.startsWith("data: ")) {
                             val data = line.removePrefix("data: ").trim()
                             if (data == "[DONE]") {
@@ -141,7 +145,7 @@ class LlmInferenceRouter @Inject constructor(
                         ?.jsonPrimitive?.content
                 }
                 else -> {
-                    // OpenAI-compatible format (Groq, Mistral, OpenRouter, GitHub Models)
+                    // OpenAI-compatible (Groq, Mistral, OpenRouter, GitHub Models)
                     json["choices"]?.jsonArray?.firstOrNull()
                         ?.jsonObject?.get("delta")
                         ?.jsonObject?.get("content")

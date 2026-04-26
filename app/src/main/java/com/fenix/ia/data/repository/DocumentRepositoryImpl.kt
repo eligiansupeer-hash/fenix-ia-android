@@ -1,7 +1,7 @@
 package com.fenix.ia.data.repository
 
 import com.fenix.ia.data.local.db.dao.DocumentDao
-import com.fenix.ia.data.local.db.entity.DocumentNodeEntity
+import com.fenix.ia.data.local.db.entities.DocumentEntity
 import com.fenix.ia.data.local.objectbox.RagEngine
 import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.repository.DocumentRepository
@@ -40,25 +40,27 @@ class DocumentRepositoryImpl @Inject constructor(
 
     // ── Mappers ──────────────────────────────────────────────────────────────
 
-    private fun DocumentNodeEntity.toDomain() = DocumentNode(
+    private fun DocumentEntity.toDomain() = DocumentNode(
         id = id,
         projectId = projectId,
         name = name,
         mimeType = mimeType,
         uri = uri,
         sizeBytes = sizeBytes,
+        semanticSummary = semanticSummary,
         isIndexed = isIndexed,
         isChecked = isChecked,
         createdAt = createdAt
     )
 
-    private fun DocumentNode.toEntity() = DocumentNodeEntity(
+    private fun DocumentNode.toEntity() = DocumentEntity(
         id = id,
         projectId = projectId,
         name = name,
         mimeType = mimeType,
         uri = uri,
         sizeBytes = sizeBytes,
+        semanticSummary = semanticSummary,
         isIndexed = isIndexed,
         isChecked = isChecked,
         createdAt = createdAt

@@ -1,12 +1,19 @@
 package com.fenix.ia.domain.model
 
+/**
+ * Modelo de dominio para documentos indexados.
+ * - uri: Content URI de Scoped Storage (Android 10+), nunca ruta absoluta
+ * - isIndexed: indica si RagEngine procesó el documento
+ * - isChecked: selección de usuario para incluir en contexto de chat
+ */
 data class DocumentNode(
     val id: String,
     val projectId: String,
     val name: String,
-    val absolutePath: String,
+    val uri: String,            // Content URI (reemplaza absolutePath)
     val mimeType: String,
-    val semanticSummary: String,  // Resumen ligero para el array de contexto
-    val createdAt: Long,
-    val isChecked: Boolean = false  // Checkpoint para selección de contexto
+    val sizeBytes: Long = 0L,
+    val isIndexed: Boolean = false,
+    val isChecked: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
 )

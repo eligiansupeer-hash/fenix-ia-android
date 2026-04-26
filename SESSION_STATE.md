@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-26 Abril 2026
+26 Abril 2026 — Sesión 2
 
 ---
 
@@ -12,146 +12,144 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 
 | Nodo | Estado | Archivos clave |
 |------|--------|----------------|
-| NODO-00 | ✅ COMPLETO | `AGENTS.md` — restricciones + RAM_IDLE_LIMIT |
+| NODO-00 | ✅ COMPLETO | `AGENTS.md` |
 | NODO-01 | ✅ COMPLETO | `app/build.gradle.kts`, `gradle/libs.versions.toml`, `AndroidManifest.xml` |
 | NODO-02 | ✅ COMPLETO | `domain/model/`, `domain/repository/`, `presentation/chat/ChatContract.kt` |
 | NODO-03 | ✅ COMPLETO | `security/SecureApiManager.kt` (AES-256-GCM + Keystore TEE) |
 | NODO-04 | ✅ COMPLETO | `data/local/db/` — Room entities, DAOs, FenixDatabase (cascade FK) |
-| NODO-05 | ✅ COMPLETO | `data/local/objectbox/` — DocumentChunk, RagEngine, EmbeddingModel, TFLiteEmbeddingModel (con fallback), FallbackHashEmbeddingModel |
-| NODO-06 | ✅ COMPLETO | `ingestion/DocumentIngestionWorker.kt` (HiltWorker, bitmap.recycle() en finally, retry exponencial) |
-| NODO-07 | ✅ COMPLETO | `data/remote/LlmInferenceRouter.kt` (SSE, multi-provider, fallback chain) |
-| NODO-08 | ✅ COMPLETO | `presentation/chat/ChatViewModel.kt` + `ChatScreen.kt` (streamingBuffer atómico) |
-| NODO-09 | ✅ COMPLETO | `presentation/sdui/` — DynamicUiSchema, SduiValidator, DynamicUiComposer |
-| NODO-10 | ✅ COMPLETO | `sandbox/PolicyEngine.kt` + `DynamicExecutionEngine.kt` (JavaScriptSandbox) |
-| NODO-11 | ✅ COMPLETO | `data/local/ArtifactManager.kt` (Scoped Storage, allowlist extensiones) |
-| NODO-12 | ✅ CÓDIGO COMPLETO | 6 tests unitarios JVM puros en `app/src/test/java/com/fenix/ia/` |
-| NODO-13 | ✅ CÓDIGO COMPLETO | `MemoryStressTest.kt` en `androidTest/` — requiere dispositivo para ejecutar |
-| NODO-14 | ✅ CÓDIGO COMPLETO | `E2ESmokeTest.kt` en `androidTest/` — requiere dispositivo para ejecutar |
+| NODO-05 | ✅ COMPLETO | `data/local/objectbox/` — DocumentChunk, RagEngine, EmbeddingModel, TFLiteEmbeddingModel + FallbackHashEmbeddingModel |
+| NODO-06 | ✅ COMPLETO | `ingestion/DocumentIngestionWorker.kt` |
+| NODO-07 | ✅ COMPLETO | `data/remote/LlmInferenceRouter.kt` |
+| NODO-08 | ✅ COMPLETO | `presentation/chat/ChatViewModel.kt` + `ChatScreen.kt` |
+| NODO-09 | ✅ COMPLETO | `presentation/sdui/` |
+| NODO-10 | ✅ COMPLETO | `sandbox/PolicyEngine.kt` + `DynamicExecutionEngine.kt` |
+| NODO-11 | ✅ COMPLETO | `data/local/ArtifactManager.kt` |
+| NODO-12 | ✅ TESTS CORRIENDO Y PASANDO | BUILD SUCCESSFUL — 35 tasks, tests JVM puros OK |
+| NODO-13 | ✅ CÓDIGO COMPLETO | `MemoryStressTest.kt` — requiere dispositivo |
+| NODO-14 | ✅ CÓDIGO COMPLETO | `E2ESmokeTest.kt` — requiere dispositivo |
 
 ---
 
-## Lo que hizo la sesión más reciente (26 Abril 2026)
+## Lo que hizo la sesión 2 (26 Abril 2026)
 
-### Archivos creados/modificados:
-```
-scripts/validate_nodo12.sh              ← NUEVO: script bash para compuertas 1-2-4-5 sin ADB
-app/src/main/assets/ASSET_README.md    ← NUEVO: instrucciones para modelo TFLite MiniLM
-app/src/main/java/.../EmbeddingModel.kt ← MODIFICADO: se agregó FallbackHashEmbeddingModel
-app/src/main/java/.../TFLiteEmbeddingModel.kt ← MODIFICADO: fallback graceful si falta .tflite
-```
+### Problema resuelto: entorno Windows en netbook Juana Manso
+La netbook corre **Windows 11** con PowerShell. Se configuró el entorno completo:
 
-### Fixes aplicados:
-- `TFLiteEmbeddingModel` ahora usa `FallbackHashEmbeddingModel` si `assets/minilm_l6_v2_quantized.tflite`
-  no existe → el build compila y corre en desarrollo sin el modelo de 22 MB
-- Script `validate_nodo12.sh` corre las compuertas 1, 2, 4 y 5 del NODO-12 localmente (sin dispositivo)
-  Ejecutar con: `bash scripts/validate_nodo12.sh`
+1. Faltaban `gradlew.bat` y `gradle/wrapper/gradle-wrapper.properties` → creados y subidos al repo
+2. Faltaba `gradle/wrapper/gradle-wrapper.jar` → descargado con curl desde GitHub
+3. Faltaba `local.properties` con la ruta del SDK → creado con:
+   `sdk.dir=C:/Users/eligi/AppData/Local/Android/Sdk`
+4. Bug en `SduiValidatorTest.kt` línea 146: escape inválido de backtick `\`` en string Kotlin → corregido usando concatenación de strings
+
+### Entorno confirmado en la netbook:
+- OS: Windows 11
+- Java: OpenJDK 17.0.18 (Temurin)
+- Python: 3.13.13
+- Git: 2.54.0
+- Gradle: 8.9 (descargado automáticamente por wrapper)
+- Android SDK: `C:\Users\eligi\AppData\Local\Android\Sdk`
+- Repo local: `C:\Users\eligi\fenix-ia-android`
+
+### Resultado de tests unitarios:
+```
+.\gradlew.bat testDebugUnitTest
+BUILD SUCCESSFUL in 4m 28s
+35 actionable tasks: 8 executed, 27 up-to-date
+```
+**Todos los tests JVM pasaron.**
+
+### Archivos creados/modificados esta sesión:
+```
+gradlew.bat                                         ← NUEVO (faltaba para Windows)
+gradle/wrapper/gradle-wrapper.properties            ← NUEVO (faltaba)
+gradle/wrapper/gradle-wrapper.jar                   ← descargado localmente (no en repo — binario)
+app/src/test/java/com/fenix/ia/SduiValidatorTest.kt ← CORREGIDO: backtick escape línea 146
+```
 
 ---
 
-## ESTADO ACTUAL: Listo para compilación y QA en dispositivo
+## ESTADO ACTUAL
 
-### Paso 1 — Compilar (netbook, sin dispositivo)
-```bash
-cd fenix-ia-android
-bash scripts/validate_nodo12.sh
+### ✅ Completado
+- Todo el código (NODOS 00-14) está en el repo
+- Tests unitarios JVM corren y pasan en Windows (BUILD SUCCESSFUL)
+- Gradle wrapper configurado para Windows
+
+### ⏳ Pendiente (requiere dispositivo Android conectado por USB)
+- Tests instrumentados (NODO-13 y NODO-14)
+- Medición de RAM idle (target < 100 MB PSS)
+- Smoke tests E2E
+
+### ⚠️ Pendiente (para producción, no bloquea QA)
+- Modelo TFLite `minilm_l6_v2_quantized.tflite` (~22 MB) NO está en el repo
+  → Sin él la app usa `FallbackHashEmbeddingModel` (RAG funciona pero sin semántica real)
+  → Ver `app/src/main/assets/ASSET_README.md` para instrucciones de descarga
+
+---
+
+## Próxima sesión — qué hacer exactamente
+
+### EN LA NETBOOK (sin dispositivo):
+El script `validate_nodo12.sh` es para Linux/bash — no corre en PowerShell Windows.
+En su lugar correr directamente:
+
+```powershell
+cd C:\Users\eligi\fenix-ia-android
+.\gradlew.bat testDebugUnitTest
 ```
-Esto ejecuta automáticamente: ktlint, detekt, assembleDebug, auditoría de seguridad y tests unitarios.
+Ya sabemos que pasa. ✅
 
-### Paso 2 — Tests unitarios solos (si solo quieres eso)
-```bash
-./gradlew testDebugUnitTest
-```
-Los 6 tests de NODO-12 son JVM puros — no requieren Android SDK ni dispositivo.
+### CON DISPOSITIVO ANDROID CONECTADO POR USB:
+Habilitar USB Debugging en el teléfono (Ajustes → Acerca del teléfono → tocar 7 veces "Número de compilación" → Opciones de desarrollador → Depuración USB).
 
-### Paso 3 — QA en dispositivo (Samsung A10 o Xiaomi C14)
-```bash
-# Conectar por USB y verificar ADB
+```powershell
+# Verificar que el dispositivo es reconocido
 adb devices
 
-# Instalar y ejecutar tests instrumentados
-./gradlew connectedDebugAndroidTest
+# Instalar APK
+.\gradlew.bat installDebug
 
-# Medir RAM idle (NODO-12 compuerta 6 + NODO-13)
+# Medir RAM idle
 adb shell am start -n com.fenix.ia/.presentation.MainActivity
-sleep 10
-adb shell dumpsys meminfo com.fenix.ia | grep "TOTAL PSS"
-# Target: < 102400 KB (100 MB PSS)
+# esperar 10 segundos
+adb shell dumpsys meminfo com.fenix.ia | findstr "TOTAL PSS"
+# Target: menos de 102400 KB
 ```
 
-### Si PSS idle > 100 MB → CHECKLIST ANTI-OOM
-```
-□ bitmap.recycle() en bloque finally de toda rutina de imagen
-□ Workers de WorkManager usando Dispatchers.IO
-□ ObjectBox queries con .use { } (auto-close)
-□ streamingBuffer reseteado a "" tras StreamEvent.Done
-□ Apache POI con FileInputStream + .use { }
-□ inSampleSize implementado en extractOcrText
-□ Chunks procesados en lotes de 10 máximo
-□ JavaScriptSandbox con MAX_HEAP 32 MB configurado
+### Si `adb` no se reconoce en PowerShell:
+Agregar al PATH:
+```powershell
+$env:PATH += ";C:\Users\eligi\AppData\Local\Android\Sdk\platform-tools"
 ```
 
 ---
 
-## Modelo TFLite (necesario para embeddings en producción)
+## Archivos de tests
 
-El archivo `minilm_l6_v2_quantized.tflite` (~22 MB) NO está en el repo.
-Ver: `app/src/main/assets/ASSET_README.md`
-
-Sin el .tflite, la app usa `FallbackHashEmbeddingModel` automáticamente:
-- El RAG funciona pero la similaridad semántica no es real
-- Válido para desarrollo y QA de UI
-- Para producción: descargar el modelo según ASSET_README.md
-
----
-
-## Archivos de tests (NODO-12 — JVM puros)
-
+### JVM puros (no requieren dispositivo) — YA PASAN ✅
 ```
 app/src/test/java/com/fenix/ia/
-├── RagEngineTest.kt               7 casos — chunking 500/1000 tokens, overlap, vacío
-├── PolicyEngineTest.kt           14 casos — bloquea eval/fetch/localStorage/DOM
-├── SduiValidatorTest.kt          12 casos — depth, schemas válidos, acciones peligrosas
-├── ArtifactGeneratorTest.kt      18 casos — extensiones permitidas/bloqueadas
-├── DocumentIngestionWorkerTest.kt 11 casos — backoff exponencial, lotes 10
-└── LlmInferenceRouterTest.kt     12 casos — selectProvider, fallback chain, null
+├── RagEngineTest.kt
+├── PolicyEngineTest.kt
+├── SduiValidatorTest.kt          ← fix de backtick aplicado esta sesión
+├── ArtifactGeneratorTest.kt
+├── DocumentIngestionWorkerTest.kt
+└── LlmInferenceRouterTest.kt
 ```
 
-## Archivos de tests instrumentados (NODO-13/14 — requieren dispositivo)
-
+### Instrumentados (requieren dispositivo) — PENDIENTES ⏳
 ```
 app/src/androidTest/java/com/fenix/ia/
-├── MemoryStressTest.kt   5 gates: PSS idle, bitmaps, 1000 chunks, 50 buffers, post-estrés
-└── E2ESmokeTest.kt       5 tests: proyecto→chat→streaming, keys ocultas, árbol docs
+├── MemoryStressTest.kt
+└── E2ESmokeTest.kt
 ```
 
 ---
 
 ## Commits de esta sesión
-- `4ff4a2e` — feat(nodo12): script validate_nodo12.sh (compuertas sin ADB)
-- `4897be3` — docs: ASSET_README.md instrucciones modelo TFLite
-- `8b32941` — feat(nodo05): FallbackHashEmbeddingModel en EmbeddingModel.kt
-- `ed18462` — fix(nodo05): TFLiteEmbeddingModel con fallback graceful sin .tflite
+- `afa6451` — chore: add gradle wrapper files
+- `e35b65e` — chore: add gradlew.bat for Windows
+- `a43f491` — fix(test): corregir escape de backtick en SduiValidatorTest linea 146
 
----
-
-## Próxima sesión: qué hacer
-
-**PRIORIDAD 1 — En la netbook (sin dispositivo):**
-```bash
-bash scripts/validate_nodo12.sh
-```
-Si alguna compuerta falla → reportar qué falla exactamente en el chat.
-
-**PRIORIDAD 2 — Con dispositivo conectado:**
-```bash
-./gradlew connectedDebugAndroidTest 2>&1 | tee test_results.log
-adb shell dumpsys meminfo com.fenix.ia | grep "TOTAL PSS"
-```
-
-**Si el build falla con error de compilación:**
-- Pegar el error exacto en el chat
-- Los errores más probables son: import faltante en algún DAO, MyObjectBox no generado (requiere primera compilación con plugin ObjectBox activo), o TFLite class not found
-
-**Si los tests unitarios fallan:**
-- Ver qué test falla y con qué excepción
-- Los 6 tests son autocontenidos (sin mocks externos) — si fallan es por lógica interna
+## Todos los commits del proyecto
+Ver: https://github.com/eligiansupeer-hash/fenix-ia-android/commits/main

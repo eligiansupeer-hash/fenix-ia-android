@@ -38,6 +38,14 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+    // NODO-12: Habilita JUnit Platform para correr JUnit 5 (Jupiter) y JUnit 4 (Vintage)
+    // Los 6 tests top-level usan JUnit 4 (org.junit.*); los subdirectory usan JUnit 5
+    // junit-vintage-engine permite que ambos coexistan bajo el mismo runner
+    testOptions {
+        unitTests.all {
+            it.useJUnitPlatform()
+        }
+    }
 }
 
 dependencies {
@@ -88,8 +96,15 @@ dependencies {
     // JavaScriptSandbox
     implementation(libs.javascriptengine)
 
+    // -----------------------------------------------------------------------
     // Tests
+    // -----------------------------------------------------------------------
+    // JUnit 5 Jupiter API: para tests en domain/usecase y data/remote (JUnit 5)
     testImplementation(libs.junit5)
+    // JUnit 4: para los 6 tests de NODO-12 top-level (org.junit.Test, org.junit.Assert.*)
+    testImplementation(libs.junit4)
+    // Vintage engine: permite ejecutar JUnit 4 bajo el JUnit Platform (useJUnitPlatform())
+    testRuntimeOnly(libs.junit.vintage.engine)
     testImplementation(libs.mockk)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.turbine)

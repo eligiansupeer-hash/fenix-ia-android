@@ -20,7 +20,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
-    // CRÍTICO: Proguard para reducir APK y evitar reflexión innecesaria
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -38,12 +37,26 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
-    // NODO-12: Habilita JUnit Platform para correr JUnit 5 (Jupiter) y JUnit 4 (Vintage)
-    // Los 6 tests top-level usan JUnit 4 (org.junit.*); los subdirectory usan JUnit 5
-    // junit-vintage-engine permite que ambos coexistan bajo el mismo runner
     testOptions {
         unitTests.all {
             it.useJUnitPlatform()
+        }
+    }
+}
+
+// ── KAPT / Kotlin 2.0 workaround ─────────────────────────────────────────────
+// KAPT no soporta formalmente Kotlin 2.0+. El plugin ObjectBox registra un
+// procesador KAPT que falla al resolver VectorDistanceType.COSINE en los stubs
+// Java generados, produciendo "distanceType = null" y el error de javac
+// "an enum annotation value must be an enum constant".
+//
+// Solucion: forzar languageVersion = 1.9 SOLO en la tarea de generacion de
+// stubs de KAPT. El resto del proyecto sigue compilando con Kotlin 2.0.
+// Ref: https://youtrack.jetbrains.com/issue/KT-55947
+afterEvaluate {
+    tasks.withType<org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask>().configureEach {
+        compilerOptions {
+            languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_9)
         }
     }
 }
@@ -87,10 +100,10 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.logging)
 
-    // Serialización Kotlin
+    // Serializacion Kotlin
     implementation(libs.kotlinx.serialization.json)
 
-    // WorkManager (ingesta asíncrona)
+    // WorkManager (ingesta asincrona)
     implementation(libs.work.runtime.ktx)
 
     // JavaScriptSandbox
@@ -100,17 +113,14 @@ dependencies {
     // NOTA: requiere assets/minilm_l6_v2_quantized.tflite (~22 MB) — ver ASSET_README.md
     implementation(libs.tensorflow.lite)
 
-    // ObjectBox — runtime explícito como fallback si el plugin no lo inyecta
+    // ObjectBox — runtime explicito como fallback si el plugin no lo inyecta
     implementation(libs.objectbox.android)
 
     // -----------------------------------------------------------------------
     // Tests
     // -----------------------------------------------------------------------
-    // JUnit 5 Jupiter API: para tests en domain/usecase y data/remote (JUnit 5)
     testImplementation(libs.junit5)
-    // JUnit 4: para los 6 tests de NODO-12 top-level (org.junit.Test, org.junit.Assert.*)
     testImplementation(libs.junit4)
-    // Vintage engine: permite ejecutar JUnit 4 bajo el JUnit Platform (useJUnitPlatform())
     testRuntimeOnly(libs.junit.vintage.engine)
     testImplementation(libs.mockk)
     testImplementation(libs.coroutines.test)

@@ -8,13 +8,17 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -34,15 +38,29 @@ fun ChatScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
+    val snackbarHostState = remember { SnackbarHostState() }
     var showDocPanel by remember { mutableStateOf(false) }
 
     LaunchedEffect(chatId) {
         viewModel.loadChat(chatId, projectId)
     }
 
+    // Auto-scroll al último mensaje cuando crece la lista
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.size - 1)
+        }
+    }
+
+    // Muestra errores de la API como Snackbar y los descarta del estado
+    LaunchedEffect(uiState.error) {
+        uiState.error?.let { errorMsg ->
+            snackbarHostState.showSnackbar(
+                message = errorMsg,
+                actionLabel = "OK",
+                duration = SnackbarDuration.Long
+            )
+            viewModel.processIntent(ChatIntent.DismissError)
         }
     }
 
@@ -54,13 +72,16 @@ fun ChatScreen(
                         listState.animateScrollToItem(uiState.messages.size - 1)
                     }
                 }
-                is ChatEffect.ShowError -> { /* TODO snackbar */ }
+                is ChatEffect.ShowError -> {
+                    snackbarHostState.showSnackbar(effect.message)
+                }
                 is ChatEffect.OpenFilePicker -> { /* handled in ProjectDetail */ }
             }
         }
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -81,7 +102,6 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // Botón para mostrar/ocultar panel de documentos de contexto
                     BadgedBox(
                         badge = {
                             val checkedCount = uiState.documents.count { it.isChecked }
@@ -108,7 +128,6 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Panel de documentos de contexto (desplegable)
             if (showDocPanel) {
                 DocumentContextPanel(
                     documents = uiState.documents,
@@ -119,7 +138,6 @@ fun ChatScreen(
                 Divider()
             }
 
-            // Lista de mensajes
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),
@@ -140,14 +158,21 @@ fun ChatScreen(
                         }
                     }
                 }
+
                 items(uiState.messages, key = { it.id }) { message ->
+                    val isLastAssistant = message.role == MessageRole.ASSISTANT &&
+                        message.id == uiState.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id
+
                     MessageBubble(
                         message = message,
+                        showActions = isLastAssistant && !uiState.isStreaming,
+                        onRegenerate = { viewModel.processIntent(ChatIntent.RegenerateLastMessage) },
                         modifier = Modifier.testTag(
                             if (message.role == MessageRole.ASSISTANT) "assistant_message" else "user_message"
                         )
                     )
                 }
+
                 if (uiState.isStreaming) {
                     item {
                         StreamingIndicator(
@@ -208,27 +233,69 @@ private fun DocumentContextPanel(
 }
 
 @Composable
-private fun MessageBubble(message: Message, modifier: Modifier = Modifier) {
+private fun MessageBubble(
+    message: Message,
+    showActions: Boolean = false,
+    onRegenerate: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     val isUser = message.role == MessageRole.USER
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
-    ) {
-        Card(
-            modifier = Modifier.widthIn(max = 300.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isUser)
-                    MaterialTheme.colorScheme.primary
-                else
-                    MaterialTheme.colorScheme.surfaceVariant
-            )
+    val clipboardManager = LocalClipboardManager.current
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
         ) {
-            Text(
-                text = message.content,
-                modifier = Modifier.padding(12.dp),
-                color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Card(
+                modifier = Modifier.widthIn(max = 300.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isUser)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Text(
+                    text = message.content,
+                    modifier = Modifier.padding(12.dp),
+                    color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Acciones del último mensaje del asistente
+        if (showActions) {
+            Row(
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Copiar
+                IconButton(
+                    onClick = { clipboardManager.setText(AnnotatedString(message.content)) },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = "Copiar mensaje",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
+                // Regenerar
+                IconButton(
+                    onClick = onRegenerate,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Regenerar respuesta",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                    )
+                }
+            }
         }
     }
 }

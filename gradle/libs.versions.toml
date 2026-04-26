@@ -53,10 +53,9 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workmanager" }
 # JavaScriptSandbox
 javascriptengine = { group = "androidx.javascriptengine", name = "javascriptengine", version.ref = "javascriptengine" }
-# ObjectBox — runtime añadido automáticamente por el plugin io.objectbox
-# Se declara explícitamente por si falla la inyección automática del plugin
+# ObjectBox — runtime explícito como fallback si la inyección automática del plugin falla
 objectbox-android = { group = "io.objectbox", name = "objectbox-android", version.ref = "objectbox" }
-# TensorFlow Lite — para TFLiteEmbeddingModel (MiniLM-L6-v2 embeddings)
+# TensorFlow Lite — para TFLiteEmbeddingModel (MiniLM-L6-v2 embeddings, 384-dim)
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
 # Tests
 junit5 = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit5" }
@@ -72,6 +71,8 @@ compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4
 android-application = { id = "com.android.application", version.ref = "agpVersion" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# kotlin-serialization: REQUERIDO para que @Serializable genere serializadores en DynamicUiSchema
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt-android = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 # ObjectBox: genera MyObjectBox + agrega objectbox-android automáticamente

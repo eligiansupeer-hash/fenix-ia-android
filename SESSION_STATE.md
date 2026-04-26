@@ -3,99 +3,155 @@
 ## Repositorio
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
-## Fecha de última sesión
-Abril 2026
+## Última sesión
+26 Abril 2026
 
-## Nodos completados
+---
+
+## Estado de nodos
 
 | Nodo | Estado | Archivos clave |
 |------|--------|----------------|
-| NODO-00 | ✅ COMPLETO | `AGENTS.md` con todas las restricciones |
-| NODO-01 | ✅ COMPLETO | Scaffold Gradle + AndroidManifest + Theme + NavHost |
-| NODO-02 | ✅ COMPLETO | Domain models + Repository interfaces + MVI contracts + ViewModels |
-| NODO-03 | ✅ COMPLETO | `SecureApiManager.kt` (AES-256-GCM / Android Keystore TEE) |
-| NODO-04 | ✅ COMPLETO | Room entities + DAOs + `FenixDatabase.kt` (cascade FK) |
-| NODO-05 | ✅ COMPLETO | `DocumentNode.kt`, `DocumentEntity.kt`, `DocumentRepositoryImpl.kt`, `AppModule.kt` (ObjectBox + EmbeddingModule), `RepositoryModule.kt` |
-| NODO-06 | ✅ COMPLETO | `PdfTextExtractor.kt` (bitmap.recycle() en finally — R-06), `DocxTextExtractor.kt` (Apache POI streaming), `DocumentIngestionWorker.kt` (HiltWorker + retry exponencial), `DocumentDao.kt`, `IngestionModule.kt` |
-| NODO-07 | ✅ COMPLETO | `LlmInferenceRouter.kt` (SSE streaming, multi-provider, fallback) |
-| NODO-08 | ✅ COMPLETO | `ChatViewModel.kt` (MVI + StateFlow, streamingBuffer atómico) + `ChatScreen.kt` |
-| NODO-09 | ✅ COMPLETO | `DynamicUiSchema.kt` (sealed class serializable), `SduiValidator.kt` (depth/count/action policy), `DynamicUiComposer.kt` (Compose nativo — cero WebView) |
-| NODO-10 | ✅ COMPLETO | `PolicyEngine.kt` (bloquea eval/fetch/import/localStorage/require), `DynamicExecutionEngine.kt` (JavaScriptSandbox aislado desechable — R-05) |
-| NODO-11 | ✅ COMPLETO | `ArtifactManager.kt` (Scoped Storage MediaStore, allowlist de extensiones) |
-| NODO-12 | ✅ COMPLETO | 6 tests unitarios committeados en `app/src/test/java/com/fenix/ia/` |
-| NODO-13 | ✅ COMPLETO | `MemoryStressTest.kt` en `app/src/androidTest/java/com/fenix/ia/` |
-| NODO-14 | ✅ COMPLETO | `E2ESmokeTest.kt` en `app/src/androidTest/java/com/fenix/ia/` |
+| NODO-00 | ✅ COMPLETO | `AGENTS.md` — restricciones + RAM_IDLE_LIMIT |
+| NODO-01 | ✅ COMPLETO | `app/build.gradle.kts`, `gradle/libs.versions.toml`, `AndroidManifest.xml` |
+| NODO-02 | ✅ COMPLETO | `domain/model/`, `domain/repository/`, `presentation/chat/ChatContract.kt` |
+| NODO-03 | ✅ COMPLETO | `security/SecureApiManager.kt` (AES-256-GCM + Keystore TEE) |
+| NODO-04 | ✅ COMPLETO | `data/local/db/` — Room entities, DAOs, FenixDatabase (cascade FK) |
+| NODO-05 | ✅ COMPLETO | `data/local/objectbox/` — DocumentChunk, RagEngine, EmbeddingModel, TFLiteEmbeddingModel (con fallback), FallbackHashEmbeddingModel |
+| NODO-06 | ✅ COMPLETO | `ingestion/DocumentIngestionWorker.kt` (HiltWorker, bitmap.recycle() en finally, retry exponencial) |
+| NODO-07 | ✅ COMPLETO | `data/remote/LlmInferenceRouter.kt` (SSE, multi-provider, fallback chain) |
+| NODO-08 | ✅ COMPLETO | `presentation/chat/ChatViewModel.kt` + `ChatScreen.kt` (streamingBuffer atómico) |
+| NODO-09 | ✅ COMPLETO | `presentation/sdui/` — DynamicUiSchema, SduiValidator, DynamicUiComposer |
+| NODO-10 | ✅ COMPLETO | `sandbox/PolicyEngine.kt` + `DynamicExecutionEngine.kt` (JavaScriptSandbox) |
+| NODO-11 | ✅ COMPLETO | `data/local/ArtifactManager.kt` (Scoped Storage, allowlist extensiones) |
+| NODO-12 | ✅ CÓDIGO COMPLETO | 6 tests unitarios JVM puros en `app/src/test/java/com/fenix/ia/` |
+| NODO-13 | ✅ CÓDIGO COMPLETO | `MemoryStressTest.kt` en `androidTest/` — requiere dispositivo para ejecutar |
+| NODO-14 | ✅ CÓDIGO COMPLETO | `E2ESmokeTest.kt` en `androidTest/` — requiere dispositivo para ejecutar |
 
-## Archivos creados en esta sesión (NODO-12 a NODO-14)
+---
+
+## Lo que hizo la sesión más reciente (26 Abril 2026)
+
+### Archivos creados/modificados:
+```
+scripts/validate_nodo12.sh              ← NUEVO: script bash para compuertas 1-2-4-5 sin ADB
+app/src/main/assets/ASSET_README.md    ← NUEVO: instrucciones para modelo TFLite MiniLM
+app/src/main/java/.../EmbeddingModel.kt ← MODIFICADO: se agregó FallbackHashEmbeddingModel
+app/src/main/java/.../TFLiteEmbeddingModel.kt ← MODIFICADO: fallback graceful si falta .tflite
+```
+
+### Fixes aplicados:
+- `TFLiteEmbeddingModel` ahora usa `FallbackHashEmbeddingModel` si `assets/minilm_l6_v2_quantized.tflite`
+  no existe → el build compila y corre en desarrollo sin el modelo de 22 MB
+- Script `validate_nodo12.sh` corre las compuertas 1, 2, 4 y 5 del NODO-12 localmente (sin dispositivo)
+  Ejecutar con: `bash scripts/validate_nodo12.sh`
+
+---
+
+## ESTADO ACTUAL: Listo para compilación y QA en dispositivo
+
+### Paso 1 — Compilar (netbook, sin dispositivo)
+```bash
+cd fenix-ia-android
+bash scripts/validate_nodo12.sh
+```
+Esto ejecuta automáticamente: ktlint, detekt, assembleDebug, auditoría de seguridad y tests unitarios.
+
+### Paso 2 — Tests unitarios solos (si solo quieres eso)
+```bash
+./gradlew testDebugUnitTest
+```
+Los 6 tests de NODO-12 son JVM puros — no requieren Android SDK ni dispositivo.
+
+### Paso 3 — QA en dispositivo (Samsung A10 o Xiaomi C14)
+```bash
+# Conectar por USB y verificar ADB
+adb devices
+
+# Instalar y ejecutar tests instrumentados
+./gradlew connectedDebugAndroidTest
+
+# Medir RAM idle (NODO-12 compuerta 6 + NODO-13)
+adb shell am start -n com.fenix.ia/.presentation.MainActivity
+sleep 10
+adb shell dumpsys meminfo com.fenix.ia | grep "TOTAL PSS"
+# Target: < 102400 KB (100 MB PSS)
+```
+
+### Si PSS idle > 100 MB → CHECKLIST ANTI-OOM
+```
+□ bitmap.recycle() en bloque finally de toda rutina de imagen
+□ Workers de WorkManager usando Dispatchers.IO
+□ ObjectBox queries con .use { } (auto-close)
+□ streamingBuffer reseteado a "" tras StreamEvent.Done
+□ Apache POI con FileInputStream + .use { }
+□ inSampleSize implementado en extractOcrText
+□ Chunks procesados en lotes de 10 máximo
+□ JavaScriptSandbox con MAX_HEAP 32 MB configurado
+```
+
+---
+
+## Modelo TFLite (necesario para embeddings en producción)
+
+El archivo `minilm_l6_v2_quantized.tflite` (~22 MB) NO está en el repo.
+Ver: `app/src/main/assets/ASSET_README.md`
+
+Sin el .tflite, la app usa `FallbackHashEmbeddingModel` automáticamente:
+- El RAG funciona pero la similaridad semántica no es real
+- Válido para desarrollo y QA de UI
+- Para producción: descargar el modelo según ASSET_README.md
+
+---
+
+## Archivos de tests (NODO-12 — JVM puros)
 
 ```
 app/src/test/java/com/fenix/ia/
-├── RagEngineTest.kt               ← chunking valores límite (500/1000, overlap 50-100)
-├── PolicyEngineTest.kt            ← bloquea eval/fetch, permite matemáticas
-├── SduiValidatorTest.kt           ← rechaza depth>5, acciones con chars especiales
-├── ArtifactGeneratorTest.kt       ← rechaza .apk/.exe, acepta .md/.json
-├── DocumentIngestionWorkerTest.kt ← retry exponencial, lotes de 10 chunks
-└── LlmInferenceRouterTest.kt      ← selectProvider, fallback, orden de prioridades
+├── RagEngineTest.kt               7 casos — chunking 500/1000 tokens, overlap, vacío
+├── PolicyEngineTest.kt           14 casos — bloquea eval/fetch/localStorage/DOM
+├── SduiValidatorTest.kt          12 casos — depth, schemas válidos, acciones peligrosas
+├── ArtifactGeneratorTest.kt      18 casos — extensiones permitidas/bloqueadas
+├── DocumentIngestionWorkerTest.kt 11 casos — backoff exponencial, lotes 10
+└── LlmInferenceRouterTest.kt     12 casos — selectProvider, fallback chain, null
+```
 
+## Archivos de tests instrumentados (NODO-13/14 — requieren dispositivo)
+
+```
 app/src/androidTest/java/com/fenix/ia/
-├── MemoryStressTest.kt            ← 5 gates: RAM idle, bitmaps, chunks, streaming, post-estrés
-└── E2ESmokeTest.kt                ← 5 tests E2E: proyecto→chat→streaming, keys, navegación
+├── MemoryStressTest.kt   5 gates: PSS idle, bitmaps, 1000 chunks, 50 buffers, post-estrés
+└── E2ESmokeTest.kt       5 tests: proyecto→chat→streaming, keys ocultas, árbol docs
 ```
 
-## Estado de los tests unitarios (NODO-12)
+---
 
-| Test | Archivo | Casos cubiertos |
-|------|---------|-----------------|
-| RagEngineTest | `RagEngineTest.kt` | 7 casos: chunkSize 500/1000, overlap 75, vacío, texto corto, excepciones |
-| PolicyEngineTest | `PolicyEngineTest.kt` | 14 casos: eval, Function, fetch, XMLHttpRequest, localStorage, DOM, rm-rf, scripts legítimos |
-| SduiValidatorTest | `SduiValidatorTest.kt` | 12 casos: depth 3/5/6, schemas válidos, acciones con `'";|>\`` prohibidos |
-| ArtifactGeneratorTest | `ArtifactGeneratorTest.kt` | 18 casos: rechaza .apk/.exe/.dex/.jar/.bat/.sh, acepta .md/.json/.txt/.html/.kt/.py/.pdf |
-| DocumentIngestionWorkerTest | `DocumentIngestionWorkerTest.kt` | 11 casos: backoff 0/1/2/3, retry, max retries, lotes 25/7/0/10 chunks |
-| LlmInferenceRouterTest | `LlmInferenceRouterTest.kt` | 12 casos: selección Gemini, fallbacks Groq→Mistral→OpenRouter→GitHub, null, disabled |
+## Commits de esta sesión
+- `4ff4a2e` — feat(nodo12): script validate_nodo12.sh (compuertas sin ADB)
+- `4897be3` — docs: ASSET_README.md instrucciones modelo TFLite
+- `8b32941` — feat(nodo05): FallbackHashEmbeddingModel en EmbeddingModel.kt
+- `ed18462` — fix(nodo05): TFLiteEmbeddingModel con fallback graceful sin .tflite
 
-## Estado de los tests instrumentados (NODO-13 y NODO-14)
+---
 
-| Test | Archivo | Requiere |
-|------|---------|---------|
-| MemoryStressTest | `androidTest/MemoryStressTest.kt` | Dispositivo/emulador — mide PSS real |
-| E2ESmokeTest | `androidTest/E2ESmokeTest.kt` | Dispositivo/emulador — flujos UI completos |
+## Próxima sesión: qué hacer
 
-## Comandos para ejecutar los tests
-
+**PRIORIDAD 1 — En la netbook (sin dispositivo):**
 ```bash
-# Tests unitarios (no requieren dispositivo)
-./gradlew testDebugUnitTest
+bash scripts/validate_nodo12.sh
+```
+Si alguna compuerta falla → reportar qué falla exactamente en el chat.
 
-# Tests con cobertura (compuerta 3 del NODO-12)
-./gradlew testDebugUnitTest jacocoTestReport
-
-# Tests instrumentados (requieren dispositivo/emulador)
-./gradlew connectedDebugAndroidTest --tests "com.fenix.ia.MemoryStressTest"
-./gradlew connectedDebugAndroidTest --tests "com.fenix.ia.E2ESmokeTest"
-
-# Ensamblado final
-./gradlew assembleDebug
-
-# Auditoría de seguridad (NODO-12, Compuerta 5)
-grep -r "sk-\|AIza\|gsk_\|Bearer \|api_key\s*=\s*\"" app/src/main/java/ --include="*.kt" \
-  && echo "FAIL: API KEY EN TEXTO PLANO" || echo "PASS: Sin API keys hardcodeadas"
+**PRIORIDAD 2 — Con dispositivo conectado:**
+```bash
+./gradlew connectedDebugAndroidTest 2>&1 | tee test_results.log
+adb shell dumpsys meminfo com.fenix.ia | grep "TOTAL PSS"
 ```
 
-## Estado del proyecto: LISTO PARA QA EN DISPOSITIVO
+**Si el build falla con error de compilación:**
+- Pegar el error exacto en el chat
+- Los errores más probables son: import faltante en algún DAO, MyObjectBox no generado (requiere primera compilación con plugin ObjectBox activo), o TFLite class not found
 
-Todos los nodos de implementación (00-14) están completos en el repositorio.
-El siguiente paso es ejecutar los tests instrumentados en dispositivo físico:
-
-1. Conectar Samsung A10 o Xiaomi C14 via ADB
-2. Ejecutar `./gradlew assembleDebug` para compilar
-3. Ejecutar `./gradlew connectedDebugAndroidTest` para todos los tests
-4. Verificar PSS con `adb shell dumpsys meminfo com.fenix.ia | grep "TOTAL PSS"`
-5. Si PSS idle > 100 MB → revisar CHECKLIST ANTI-OOM del manual (sección final)
-
-## Notas técnicas importantes
-
-- Los tests unitarios (NODO-12) NO dependen de Android SDK ni Hilt — son JUnit5 puro
-- Los tests instrumentados (NODO-13/14) requieren `@RunWith(AndroidJUnit4::class)`
-- `MemoryStressTest` usa `Debug.getMemoryInfo()` — más preciso que `Runtime.freeMemory()`
-- `E2ESmokeTest` usa tags de accesibilidad (`testTag` en Compose) — asegurarse de que los Composables los tienen definidos
-- El timeout de streaming en E2ESmokeTest es 30 segundos — suficiente para API real sin mock
+**Si los tests unitarios fallan:**
+- Ver qué test falla y con qué excepción
+- Los 6 tests son autocontenidos (sin mocks externos) — si fallan es por lógica interna

@@ -2,10 +2,10 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.kotlin.serialization) // @Serializable en DynamicUiSchema.kt
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.objectbox) // ObjectBox 4.0 — genera MyObjectBox + inyecta objectbox-android
+    alias(libs.plugins.objectbox)
 }
 
 android {
@@ -17,7 +17,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitHandler"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
     buildTypes {
@@ -35,7 +35,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     packaging {
-        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Apache POI incluye archivos de licencia duplicados
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
     }
     testOptions {
         unitTests.all {
@@ -45,15 +53,9 @@ android {
 }
 
 // ── ObjectBox + KAPT nota ─────────────────────────────────────────────────────
-// ObjectBox 4.0 NO soporta KSP — solo usa kapt/annotationProcessor internamente.
-// El plugin io.objectbox registra su propio procesador KAPT automáticamente.
-// El workaround afterEvaluate + languageVersion=1.9 fue removido porque no tuvo
-// efecto en tiempo de ejecución: kaptGenerateStubsDebugKotlin sí corría y
-// generaba `distanceType = null` en el stub Java igual.
-//
-// Solución definitiva: en DocumentChunk.kt se omite distanceType en @HnswIndex
-// para evitar que KAPT tenga que resolver VectorDistanceType.COSINE.
-// Ver: app/src/main/java/com/fenix/ia/data/local/objectbox/DocumentChunk.kt
+// ObjectBox 4.0 NO soporta KSP — usa kapt internamente via su plugin.
+// Fix: en DocumentChunk.kt se omitió distanceType en @HnswIndex para evitar
+// que KAPT falle resolviendo VectorDistanceType.COSINE en Kotlin 2.0+.
 // ─────────────────────────────────────────────────────────────────────────────
 
 dependencies {
@@ -62,6 +64,8 @@ dependencies {
     implementation(composeBom)
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
+    // Material Icons Extended — requerido para Icons.Default.Stop, Delete, etc.
+    implementation(libs.compose.material.icons.extended)
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.activity.compose)
@@ -79,6 +83,9 @@ dependencies {
 
     // Coroutines
     implementation(libs.coroutines.android)
+    // kotlinx-coroutines-guava: requerido para ListenableFuture.await()
+    // usado en JavaScriptSandbox.createConnectedInstanceAsync().await()
+    implementation(libs.coroutines.guava)
 
     // Room
     implementation(libs.room.runtime)
@@ -98,18 +105,27 @@ dependencies {
     // Serializacion Kotlin
     implementation(libs.kotlinx.serialization.json)
 
-    // WorkManager (ingesta asincrona)
+    // WorkManager
     implementation(libs.work.runtime.ktx)
 
     // JavaScriptSandbox
     implementation(libs.javascriptengine)
 
-    // TensorFlow Lite — modelo MiniLM-L6-v2 (384-dim embeddings para RAG)
-    // NOTA: requiere assets/minilm_l6_v2_quantized.tflite (~22 MB) — ver ASSET_README.md
+    // TensorFlow Lite
     implementation(libs.tensorflow.lite)
 
-    // ObjectBox — runtime explicito como fallback si el plugin no lo inyecta
+    // ObjectBox runtime
     implementation(libs.objectbox.android)
+
+    // Apache POI — extracción de texto DOCX (R-04: excluye xmlbeans pesado)
+    implementation(libs.apache.poi.ooxml) {
+        exclude(group = "org.apache.xmlbeans")
+        exclude(group = "com.github.virtuald")
+        exclude(group = "org.apache.logging.log4j")
+        exclude(group = "org.apache.commons", module = "commons-compress")
+    }
+    // commons-compress necesario para POI pero a versión ligera
+    implementation(libs.commons.compress)
 
     // -----------------------------------------------------------------------
     // Tests

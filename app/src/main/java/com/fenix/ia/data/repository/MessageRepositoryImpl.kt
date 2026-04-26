@@ -22,6 +22,8 @@ class MessageRepositoryImpl @Inject constructor(
 
     override suspend fun deleteMessagesInChat(chatId: String) = dao.deleteMessagesInChat(chatId)
 
+    override suspend fun deleteMessage(messageId: String) = dao.deleteMessageById(messageId)
+
     private fun MessageEntity.toDomain() = Message(
         id = id, chatId = chatId,
         role = MessageRole.valueOf(role),

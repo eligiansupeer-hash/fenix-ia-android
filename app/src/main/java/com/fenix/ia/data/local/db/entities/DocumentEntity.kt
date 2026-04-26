@@ -8,6 +8,7 @@ import androidx.room.PrimaryKey
 /**
  * Entidad Room para documentos del proyecto.
  * - uri: Content URI de Scoped Storage (no rutas absolutas — R-04 / API 30+)
+ * - semanticSummary: resumen breve generado durante la ingesta (máx ~300 chars)
  * - isIndexed: true cuando RagEngine terminó de indexar en ObjectBox
  * - sizeBytes: para mostrar tamaño en UI sin releer el archivo
  */
@@ -25,9 +26,10 @@ data class DocumentEntity(
     @PrimaryKey val id: String,
     val projectId: String,
     val name: String,
-    val uri: String,          // Content URI (reemplaza absolutePath — compatible API 30+)
+    val uri: String,              // Content URI (reemplaza absolutePath — compatible API 30+)
     val mimeType: String,
     val sizeBytes: Long = 0L,
+    val semanticSummary: String = "",
     val isIndexed: Boolean = false,
     val isChecked: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()

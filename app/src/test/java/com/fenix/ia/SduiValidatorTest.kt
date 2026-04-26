@@ -3,20 +3,7 @@ package com.fenix.ia
 import org.junit.Assert.*
 import org.junit.Test
 
-/**
- * NODO-12 — COMPUERTA 3: Test unitario de SduiValidator
- * Verifica:
- *   - Rechaza schemas con depth > 5
- *   - Acepta schemas válidos dentro de los límites
- *   - Rechaza acciones con caracteres especiales peligrosos
- *   - Rechaza schemas con demasiados nodos
- */
 class SduiValidatorTest {
-
-    // -----------------------------------------------------------------------
-    // Reimplementación mínima del validador para tests unitarios puros
-    // (espejo de SduiValidator.kt en sandbox/)
-    // -----------------------------------------------------------------------
 
     data class ValidationResult(val isValid: Boolean, val reason: String = "")
 
@@ -54,13 +41,9 @@ class SduiValidatorTest {
         else mapOf("type" to "Column", "children" to listOf(buildNestedSchema(depth - 1)))
     }
 
-    // -----------------------------------------------------------------------
-    // Tests de profundidad máxima
-    // -----------------------------------------------------------------------
-
     @Test
     fun `rechaza schema con depth mayor a 5`() {
-        val deepSchema = buildNestedSchema(6) // depth 0..6 = 7 niveles
+        val deepSchema = buildNestedSchema(6)
         val result = validateSchema(deepSchema)
         assertFalse("Depth > 5 debe ser rechazado", result.isValid)
         assertTrue("Mensaje debe mencionar profundidad", result.reason.contains("Profundidad"))
@@ -68,9 +51,9 @@ class SduiValidatorTest {
 
     @Test
     fun `acepta schema con depth exactamente igual a 5`() {
-        val schema = buildNestedSchema(5) // depth 0..5 = 6 niveles (depth=5 es el límite)
+        val schema = buildNestedSchema(5)
         val result = validateSchema(schema)
-        assertTrue("Depth == 5 debe ser aceptado. Razón: ${result.reason}", result.isValid)
+        assertTrue("Depth == 5 debe ser aceptado. Razon: ${result.reason}", result.isValid)
     }
 
     @Test
@@ -80,19 +63,11 @@ class SduiValidatorTest {
         assertTrue("Depth < 5 debe ser aceptado", result.isValid)
     }
 
-    // -----------------------------------------------------------------------
-    // Tests de schemas válidos
-    // -----------------------------------------------------------------------
-
     @Test
     fun `acepta schema de boton simple`() {
-        val schema = mapOf(
-            "type" to "Button",
-            "label" to "Guardar",
-            "action" to "saveDocument"
-        )
+        val schema = mapOf("type" to "Button", "label" to "Guardar", "action" to "saveDocument")
         val result = validateSchema(schema)
-        assertTrue("Schema de botón simple debe ser válido", result.isValid)
+        assertTrue("Schema de boton simple debe ser valido", result.isValid)
     }
 
     @Test
@@ -106,65 +81,58 @@ class SduiValidatorTest {
             )
         )
         val result = validateSchema(schema)
-        assertTrue("Formulario válido debe ser aceptado", result.isValid)
+        assertTrue("Formulario valido debe ser aceptado", result.isValid)
     }
-
-    // -----------------------------------------------------------------------
-    // Tests de acciones con caracteres especiales
-    // -----------------------------------------------------------------------
 
     @Test
     fun `rechaza accion con comilla simple`() {
         val schema = mapOf("type" to "Button", "action" to "save'; DROP TABLE users; --")
         val result = validateSchema(schema)
-        assertFalse("Acción con SQL injection debe ser rechazada", result.isValid)
+        assertFalse("Accion con SQL injection debe ser rechazada", result.isValid)
     }
 
     @Test
     fun `rechaza accion con comilla doble`() {
         val schema = mapOf("type" to "Button", "action" to "load\"script\"")
         val result = validateSchema(schema)
-        assertFalse("Acción con comilla doble debe ser rechazada", result.isValid)
+        assertFalse("Accion con comilla doble debe ser rechazada", result.isValid)
     }
 
     @Test
     fun `rechaza accion con signo mayor`() {
         val schema = mapOf("type" to "Button", "action" to "show<script>")
         val result = validateSchema(schema)
-        assertFalse("Acción con < debe ser rechazada", result.isValid)
+        assertFalse("Accion con < debe ser rechazada", result.isValid)
     }
 
     @Test
     fun `rechaza accion con pipe`() {
         val schema = mapOf("type" to "Button", "action" to "execute|rm -rf")
         val result = validateSchema(schema)
-        assertFalse("Acción con | debe ser rechazada", result.isValid)
+        assertFalse("Accion con | debe ser rechazada", result.isValid)
     }
 
     @Test
     fun `rechaza accion con backtick`() {
-        val schema = mapOf("type" to "Button", "action" to "run\`command\`")
+        val backtickAction = "run" + "`" + "command" + "`"
+        val schema = mapOf("type" to "Button", "action" to backtickAction)
         val result = validateSchema(schema)
-        assertFalse("Acción con backtick debe ser rechazada", result.isValid)
+        assertFalse("Accion con backtick debe ser rechazada", result.isValid)
     }
 
     @Test
     fun `acepta accion con caracteres alphanumericos y guiones`() {
         val schema = mapOf("type" to "Button", "action" to "save-document_v2")
         val result = validateSchema(schema)
-        assertTrue("Acción alfanumérica con guiones debe ser válida", result.isValid)
+        assertTrue("Accion alfanumerica con guiones debe ser valida", result.isValid)
     }
-
-    // -----------------------------------------------------------------------
-    // Tests de límite de nodos
-    // -----------------------------------------------------------------------
 
     @Test
     fun `rechaza schema con mas de 100 nodos hijos`() {
         val children = (1..101).map { mapOf("type" to "Text", "value" to "item$it") }
         val schema = mapOf("type" to "Column", "children" to children)
         val result = validateSchema(schema)
-        assertFalse("Más de 100 hijos debe ser rechazado", result.isValid)
+        assertFalse("Mas de 100 hijos debe ser rechazado", result.isValid)
     }
 
     @Test

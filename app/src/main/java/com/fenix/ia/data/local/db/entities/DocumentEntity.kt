@@ -5,6 +5,12 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+/**
+ * Entidad Room para documentos del proyecto.
+ * - uri: Content URI de Scoped Storage (no rutas absolutas — R-04 / API 30+)
+ * - isIndexed: true cuando RagEngine terminó de indexar en ObjectBox
+ * - sizeBytes: para mostrar tamaño en UI sin releer el archivo
+ */
 @Entity(
     tableName = "documents",
     foreignKeys = [ForeignKey(
@@ -19,9 +25,10 @@ data class DocumentEntity(
     @PrimaryKey val id: String,
     val projectId: String,
     val name: String,
-    val absolutePath: String,
+    val uri: String,          // Content URI (reemplaza absolutePath — compatible API 30+)
     val mimeType: String,
-    val semanticSummary: String,
-    val createdAt: Long,
-    val isChecked: Boolean = false
+    val sizeBytes: Long = 0L,
+    val isIndexed: Boolean = false,
+    val isChecked: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
 )

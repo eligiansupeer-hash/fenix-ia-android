@@ -18,13 +18,14 @@ import kotlinx.coroutines.withContext
  *
  * Flujo:
  *   1. Lee DocumentEntity de Room por documentId
- *   2. Extrae texto (PDF → PdfTextExtractor, DOCX → DocxTextExtractor, text/* → bufferedReader)
+ *   2. Extrae texto segun MIME: PDF via PdfTextExtractor, DOCX via DocxTextExtractor,
+ *      text/plain y text/md via bufferedReader
  *   3. Indexa en ObjectBox via RagEngine (chunking 750t / overlap 75t, lotes de 10)
  *   4. Marca isIndexed = true en Room
  *
- * RESTRICCIÓN R-04: Extractores procesan archivos en streaming, nunca carga completa en heap.
- * RESTRICCIÓN R-06: bitmap.recycle() garantizado en PdfTextExtractor.extractText() — finally.
- * Retry policy: exponential backoff, máx 3 reintentos.
+ * RESTRICCION R-04: Extractores procesan archivos en streaming, nunca carga completa en heap.
+ * RESTRICCION R-06: bitmap.recycle() garantizado en PdfTextExtractor.extractText() — finally.
+ * Retry policy: exponential backoff, max 3 reintentos.
  */
 @HiltWorker
 class DocumentIngestionWorker @AssistedInject constructor(
@@ -43,7 +44,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
             )
         val projectId = inputData.getLong(KEY_PROJECT_ID, -1L)
         if (projectId == -1L) {
-            return@withContext Result.failure(workDataOf("error" to "projectId inválido"))
+            return@withContext Result.failure(workDataOf("error" to "projectId invalido"))
         }
 
         runCatching {
@@ -73,7 +74,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
 
             if (rawText.isBlank()) {
                 documentDao.markAsIndexed(documentId)
-                return@withContext Result.success(workDataOf("info" to "Documento vacío"))
+                return@withContext Result.success(workDataOf("info" to "Documento vacio"))
             }
 
             ragEngine.indexDocument(
@@ -128,7 +129,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
     }
 }
 
-// ── Mapper local ────────────────────────────────────────────────────────────
+// Mapper local: DocumentEntity -> DocumentNode
 private fun DocumentEntity.toDomain() = DocumentNode(
     id = id,
     projectId = projectId,
@@ -136,6 +137,7 @@ private fun DocumentEntity.toDomain() = DocumentNode(
     uri = uri,
     mimeType = mimeType,
     sizeBytes = sizeBytes,
+    semanticSummary = semanticSummary,
     isIndexed = isIndexed,
     isChecked = isChecked,
     createdAt = createdAt

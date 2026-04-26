@@ -14,4 +14,8 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE chatId = :chatId")
     suspend fun deleteMessagesInChat(chatId: String)
+
+    // Para regenerar el último mensaje del asistente
+    @Query("DELETE FROM messages WHERE id = :messageId")
+    suspend fun deleteMessageById(messageId: String)
 }

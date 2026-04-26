@@ -9,14 +9,15 @@ sealed class ChatIntent {
     data class ToggleDocumentCheckpoint(val documentId: String) : ChatIntent()
     data class LoadChat(val chatId: String) : ChatIntent()
     object StopStreaming : ChatIntent()
-    data class RegenerateLastMessage(val chatId: String) : ChatIntent()
+    object RegenerateLastMessage : ChatIntent()
+    object DismissError : ChatIntent()
 }
 
 data class ChatUiState(
     val messages: List<Message> = emptyList(),
     val documents: List<DocumentNode> = emptyList(),
     val isStreaming: Boolean = false,
-    val streamingBuffer: String = "",   // Acumula tokens SSE
+    val streamingBuffer: String = "",
     val activeProvider: ApiProvider? = null,
     val error: String? = null,
     val isLoading: Boolean = false

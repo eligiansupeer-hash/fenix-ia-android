@@ -17,7 +17,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitHandler"
     }
     buildFeatures { compose = true }
     buildTypes {
@@ -44,22 +44,17 @@ android {
     }
 }
 
-// ── KAPT / Kotlin 2.0 workaround ─────────────────────────────────────────────
-// KAPT no soporta formalmente Kotlin 2.0+. El plugin ObjectBox registra un
-// procesador KAPT que falla al resolver VectorDistanceType.COSINE en los stubs
-// Java generados, produciendo "distanceType = null" y el error de javac
-// "an enum annotation value must be an enum constant".
+// ── ObjectBox + KAPT nota ─────────────────────────────────────────────────────
+// ObjectBox 4.0 NO soporta KSP — solo usa kapt/annotationProcessor internamente.
+// El plugin io.objectbox registra su propio procesador KAPT automáticamente.
+// El workaround afterEvaluate + languageVersion=1.9 fue removido porque no tuvo
+// efecto en tiempo de ejecución: kaptGenerateStubsDebugKotlin sí corría y
+// generaba `distanceType = null` en el stub Java igual.
 //
-// Solucion: forzar languageVersion = 1.9 SOLO en la tarea de generacion de
-// stubs de KAPT. El resto del proyecto sigue compilando con Kotlin 2.0.
-// Ref: https://youtrack.jetbrains.com/issue/KT-55947
-afterEvaluate {
-    tasks.withType<org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask>().configureEach {
-        compilerOptions {
-            languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_9)
-        }
-    }
-}
+// Solución definitiva: en DocumentChunk.kt se omite distanceType en @HnswIndex
+// para evitar que KAPT tenga que resolver VectorDistanceType.COSINE.
+// Ver: app/src/main/java/com/fenix/ia/data/local/objectbox/DocumentChunk.kt
+// ─────────────────────────────────────────────────────────────────────────────
 
 dependencies {
     // Compose BOM

@@ -14,12 +14,17 @@ tensorflowLite = "2.16.1"
 junit5 = "5.11.3"
 junit4 = "4.13.2"
 mockk = "1.13.13"
+# Apache POI — extracción texto DOCX (R-04: sin renderizado, solo texto)
+apachePoi = "5.3.0"
+commonsCompress = "1.27.1"
 
 [libraries]
 # Compose
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
 compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+# Material Icons Extended: requerido para Icons.Default.Stop, Delete, etc.
+compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }
@@ -35,6 +40,8 @@ hilt-androidx-compiler = { group = "androidx.hilt", name = "hilt-compiler", vers
 # Coroutines
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version = "1.9.0" }
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version = "1.9.0" }
+# coroutines-guava: ListenableFuture.await() — requerido por JavaScriptSandbox API
+coroutines-guava = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-guava", version = "1.9.0" }
 # Room
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
@@ -49,19 +56,20 @@ ktor-serialization-json = { group = "io.ktor", name = "ktor-serialization-kotlin
 ktor-logging = { group = "io.ktor", name = "ktor-client-logging", version.ref = "ktor" }
 # Serialization
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version = "1.7.3" }
-# WorkManager (ingesta asíncrona)
+# WorkManager
 work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workmanager" }
 # JavaScriptSandbox
 javascriptengine = { group = "androidx.javascriptengine", name = "javascriptengine", version.ref = "javascriptengine" }
-# ObjectBox — runtime explícito como fallback si la inyección automática del plugin falla
+# ObjectBox
 objectbox-android = { group = "io.objectbox", name = "objectbox-android", version.ref = "objectbox" }
-# TensorFlow Lite — para TFLiteEmbeddingModel (MiniLM-L6-v2 embeddings, 384-dim)
+# TensorFlow Lite
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+# Apache POI — extracción texto DOCX sin renderizado (R-04 compliant)
+apache-poi-ooxml = { group = "org.apache.poi", name = "poi-ooxml", version.ref = "apachePoi" }
+commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
 # Tests
 junit5 = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit5" }
-# JUnit 4 necesario para los 6 tests de NODO-12 (top-level, estilo org.junit.*)
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
-# Vintage engine: permite que JUnit Platform ejecute tests JUnit 4 bajo useJUnitPlatform()
 junit-vintage-engine = { group = "org.junit.vintage", name = "junit-vintage-engine", version.ref = "junit5" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 turbine = { group = "app.cash.turbine", name = "turbine", version = "1.2.0" }
@@ -71,9 +79,7 @@ compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4
 android-application = { id = "com.android.application", version.ref = "agpVersion" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-# kotlin-serialization: REQUERIDO para que @Serializable genere serializadores en DynamicUiSchema
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt-android = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
-# ObjectBox: genera MyObjectBox + agrega objectbox-android automáticamente
 objectbox = { id = "io.objectbox", version.ref = "objectbox" }

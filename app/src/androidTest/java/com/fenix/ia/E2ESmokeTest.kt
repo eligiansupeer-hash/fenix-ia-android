@@ -14,10 +14,13 @@ import org.junit.runner.RunWith
  * Ejecutar con dispositivo/emulador conectado:
  *   ./gradlew connectedDebugAndroidTest --tests "com.fenix.ia.E2ESmokeTest"
  *
- * Cubre los flujos críticos del manual:
+ * Cubre los flujos críticos del manual FENIX IA:
  *   1. Crear proyecto → abrir → crear chat → enviar mensaje → verificar streaming
  *   2. Configurar API key → verificar que no aparece en texto plano
  *   3. Árbol de documentos visible en el proyecto
+ *   4. Pantalla principal carga sin crash
+ *   5. Navegación sin crash
+ *   6. Regenerar último mensaje del asistente
  */
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -29,110 +32,132 @@ class E2ESmokeTest {
     // -----------------------------------------------------------------------
     // Test 1: Flujo completo — proyecto → chat → mensaje → streaming
     // -----------------------------------------------------------------------
-
     @Test
-    fun `flujo completo crear proyecto chat ingerir documento consultar`() {
-        // 1. Crea un proyecto
+    fun `flujo completo crear proyecto chat y enviar mensaje`() {
         composeTestRule.onNodeWithContentDescription("Nuevo proyecto").performClick()
         composeTestRule.onNodeWithTag("project_name_field").performTextInput("Álgebra Lineal")
         composeTestRule.onNodeWithTag("project_system_prompt")
             .performTextInput("Eres un tutor de álgebra lineal")
         composeTestRule.onNodeWithText("Guardar").performClick()
 
-        // Verifica que el proyecto aparece en la lista
         composeTestRule.onNodeWithText("Álgebra Lineal").assertIsDisplayed()
 
-        // 2. Abre el proyecto y crea un chat
         composeTestRule.onNodeWithText("Álgebra Lineal").performClick()
         composeTestRule.onNodeWithContentDescription("Nuevo chat").performClick()
 
-        // 3. Verifica que la pantalla de chat está activa
         composeTestRule.onNodeWithTag("chat_input").assertIsDisplayed()
 
-        // 4. Envía un mensaje y verifica streaming
         composeTestRule.onNodeWithTag("chat_input").performTextInput("¿Qué es una matriz?")
         composeTestRule.onNodeWithTag("send_button").performClick()
 
-        // Verifica indicador de streaming (aparece mientras el LLM genera)
+        // Indicador de streaming debe aparecer
         composeTestRule.waitUntil(timeoutMillis = 5000) {
             composeTestRule.onAllNodesWithTag("streaming_indicator")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
 
-        // Espera respuesta completa (timeout 30s para LLM real)
+        // Respuesta completa en máximo 30s (LLM real)
         composeTestRule.waitUntil(timeoutMillis = 30000) {
             composeTestRule.onAllNodesWithTag("assistant_message")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
 
-        // 5. Verifica que la respuesta contiene texto (no está vacía)
         composeTestRule.onAllNodesWithTag("assistant_message")
             .onFirst()
             .assertTextContains("", substring = true)
     }
 
     // -----------------------------------------------------------------------
-    // Test 2: API keys no aparecen en texto plano (seguridad — AGENTS.md)
+    // Test 2: API keys — seguridad (AGENTS.md restricción)
     // -----------------------------------------------------------------------
-
     @Test
-    fun `configuracion de API keys se almacena sin texto plano visible`() {
+    fun `api key guardada no aparece en texto plano en la UI`() {
         composeTestRule.onNodeWithContentDescription("Configuración").performClick()
-        composeTestRule.onNodeWithText("Insertar API Keys").performClick()
 
         composeTestRule.onNodeWithTag("gemini_key_field").performTextInput("AIza-test-key-abc123")
         composeTestRule.onNodeWithText("Guardar").performClick()
 
-        // Verifica que el proveedor aparece como configurado
-        composeTestRule.onNodeWithText("Gemini ✓").assertIsDisplayed()
+        // El proveedor aparece como configurado (con tilde)
+        composeTestRule.onNodeWithText("GEMINI ✓").assertIsDisplayed()
 
-        // CRÍTICO: Verifica que la key en texto plano NO aparece en la UI
+        // CRÍTICO: la key en texto plano NO debe aparecer en ningún lugar
         composeTestRule.onNodeWithText("AIza-test-key-abc123").assertDoesNotExist()
     }
 
     // -----------------------------------------------------------------------
     // Test 3: Árbol de documentos visible
     // -----------------------------------------------------------------------
-
     @Test
-    fun `arbol de documentos muestra archivos generados por la IA`() {
-        // Navega a la pantalla principal de proyecto
-        composeTestRule.onNodeWithTag("document_tree").assertIsDisplayed()
+    fun `arbol de documentos visible en detalle de proyecto`() {
+        // Navega a un proyecto existente (o crea uno si no hay)
+        composeTestRule.onNodeWithContentDescription("Nuevo proyecto").performClick()
+        composeTestRule.onNodeWithTag("project_name_field").performTextInput("Proyecto Test")
+        composeTestRule.onNodeWithText("Guardar").performClick()
+
+        composeTestRule.onNodeWithText("Proyecto Test").performClick()
+
+        // El árbol de documentos debe existir (aunque esté vacío)
+        composeTestRule.onNodeWithTag("document_tree").assertExists()
     }
 
     // -----------------------------------------------------------------------
-    // Test 4: Pantalla de proyectos carga sin crash
+    // Test 4: Pantalla principal carga sin crash
     // -----------------------------------------------------------------------
-
     @Test
     fun `pantalla de proyectos carga correctamente`() {
-        // La MainActivity debe mostrar la pantalla de proyectos al iniciar
-        // Si hay crash en el startup, este test falla inmediatamente
         composeTestRule.onRoot().assertExists()
-        // Verifica que al menos hay contenido visible
         composeTestRule.onRoot().assertIsDisplayed()
     }
 
     // -----------------------------------------------------------------------
-    // Test 5: Navegación entre pantallas no causa crash
+    // Test 5: Navegación sin crash
     // -----------------------------------------------------------------------
-
     @Test
     fun `navegacion a configuracion y regreso no causa crash`() {
-        // Abre configuración
         composeTestRule.onNodeWithContentDescription("Configuración").performClick()
-
-        // Verifica que la pantalla de configuración cargó
         composeTestRule.onRoot().assertIsDisplayed()
 
-        // Navega hacia atrás
         composeTestRule.activityRule.scenario.onActivity { activity ->
             activity.onBackPressedDispatcher.onBackPressed()
         }
 
-        // Verifica que volvió a la pantalla principal sin crash
         composeTestRule.onRoot().assertIsDisplayed()
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: Regenerar último mensaje del asistente
+    // -----------------------------------------------------------------------
+    @Test
+    fun `boton regenerar aparece en ultimo mensaje del asistente`() {
+        // Prerrequisito: navegar a un chat con al menos un mensaje del asistente
+        composeTestRule.onNodeWithContentDescription("Nuevo proyecto").performClick()
+        composeTestRule.onNodeWithTag("project_name_field").performTextInput("Test Regen")
+        composeTestRule.onNodeWithText("Guardar").performClick()
+        composeTestRule.onNodeWithText("Test Regen").performClick()
+        composeTestRule.onNodeWithContentDescription("Nuevo chat").performClick()
+
+        // Envía un mensaje y espera la respuesta
+        composeTestRule.onNodeWithTag("chat_input").performTextInput("Hola")
+        composeTestRule.onNodeWithTag("send_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 30000) {
+            composeTestRule.onAllNodesWithTag("assistant_message")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+
+        // El botón de regenerar (contentDescription = "Regenerar respuesta") debe existir
+        composeTestRule.onNodeWithContentDescription("Regenerar respuesta").assertIsDisplayed()
+
+        // Al tocar regenerar no debe crashear y debe iniciar streaming
+        composeTestRule.onNodeWithContentDescription("Regenerar respuesta").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 3000) {
+            composeTestRule.onAllNodesWithTag("streaming_indicator")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
     }
 }

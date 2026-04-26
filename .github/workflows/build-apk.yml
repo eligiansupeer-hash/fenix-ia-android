@@ -1,38 +1,206 @@
-name: Build APK
+name: CI — Verificación previa al rebuild
 
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ESTRUCTURA:
+#   Job 1 — compile     → compileDebugKotlin  (rápido, detecta errores de tipos)
+#   Job 2 — unit-tests  → testDebugUnitTest   (solo si compile pasa)
+#   Job 3 — build-apk   → assembleDebug       (solo si tests pasan)
+#
+# Si Job 1 falla → Jobs 2 y 3 se cancelan automáticamente.
+# Cada job reporta su estado con resumen en la pestaña Summary de GitHub.
+# ─────────────────────────────────────────────────────────────────────────────
+
 jobs:
-  build:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 1: Compilación Kotlin — el más rápido, el primero en correr
+  # Detecta: errores de tipos, imports rotos, funciones no resueltas, etc.
+  # ──────────────────────────────────────────────────────────────────────────
+  compile:
+    name: "🔨 Compilar Kotlin"
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Permisos gradlew
+        run: chmod +x gradlew
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Compilar (compileDebugKotlin)
+        id: compile
+        run: ./gradlew compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
+        # stacktrace para ver la causa raíz si hay error en plugins (ObjectBox/KSP)
+
+      - name: Verificar API keys hardcodeadas (seguridad AGENTS.md)
+        run: |
+          if grep -r --include="*.kt" -E "AIza[A-Za-z0-9_-]{35}|sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}" app/src/main/; then
+            echo "::error::⛔ API key en texto plano detectada en el código fuente"
+            exit 1
+          else
+            echo "✅ Sin API keys hardcodeadas"
+          fi
+
+      - name: Resumen de errores de compilación
+        if: failure()
+        run: |
+          echo "### ❌ Errores de compilación Kotlin" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "^e: |error:" /tmp/compile.log | head -60 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Revisá los archivos marcados con \`e:\` para encontrar el problema." >> $GITHUB_STEP_SUMMARY
+
+      - name: Resumen OK
+        if: success()
+        run: |
+          echo "### ✅ Compilación Kotlin exitosa" >> $GITHUB_STEP_SUMMARY
+          echo "- Sin errores de tipo ni imports rotos" >> $GITHUB_STEP_SUMMARY
+          echo "- Sin API keys hardcodeadas" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 2: Tests unitarios JVM
+  # Corre JUnit5 + MockK. NO necesita emulador Android.
+  # ──────────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: "🧪 Tests Unitarios (JVM)"
+    runs-on: ubuntu-latest
+    needs: compile   # Solo corre si la compilación es exitosa
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
         with:
-          gradle-version: '8.10'
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+      - name: Permisos gradlew
+        run: chmod +x gradlew
 
-      - name: Upload Debug APK
+      - name: Correr tests JVM (testDebugUnitTest)
+        run: ./gradlew testDebugUnitTest --no-daemon --continue
+        # --continue: corre todos los tests aunque algunos fallen,
+        # así vemos todos los errores juntos en el reporte
+
+      - name: Resumen de resultados
+        if: always()
+        run: |
+          echo "### 🧪 Resultados de Tests Unitarios" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Parsea los XML de JUnit para contar PASS/FAIL
+          if ls app/build/test-results/testDebugUnitTest/*.xml 1> /dev/null 2>&1; then
+            TOTAL=$(grep -h "tests=" app/build/test-results/testDebugUnitTest/*.xml \
+              | grep -oP 'tests="\K[0-9]+' | awk '{s+=$1} END {print s}')
+            FAILED=$(grep -h "failures=" app/build/test-results/testDebugUnitTest/*.xml \
+              | grep -oP 'failures="\K[0-9]+' | awk '{s+=$1} END {print s}')
+            ERRORS=$(grep -h "errors=" app/build/test-results/testDebugUnitTest/*.xml \
+              | grep -oP 'errors="\K[0-9]+' | awk '{s+=$1} END {print s}')
+            SKIPPED=$(grep -h "skipped=" app/build/test-results/testDebugUnitTest/*.xml \
+              | grep -oP 'skipped="\K[0-9]+' | awk '{s+=$1} END {print s}')
+
+            echo "| ✅ Pasaron | ❌ Fallaron | 💥 Errores | ⏭️ Saltados |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------------|-----------|------------|" >> $GITHUB_STEP_SUMMARY
+            PASSED=$((TOTAL - FAILED - ERRORS - SKIPPED))
+            echo "| $PASSED | $FAILED | $ERRORS | $SKIPPED |" >> $GITHUB_STEP_SUMMARY
+
+            # Lista los tests fallidos con su nombre
+            if [ "${FAILED:-0}" -gt 0 ] || [ "${ERRORS:-0}" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Tests fallidos:**" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              grep -h "testcase" app/build/test-results/testDebugUnitTest/*.xml \
+                | grep -E 'failure|error' \
+                | grep -oP 'name="\K[^"]+' | head -20 >> $GITHUB_STEP_SUMMARY || true
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ No se encontraron resultados XML de tests" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Subir reporte HTML de tests
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fenix-ia-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: test-report-html
+          path: app/build/reports/tests/testDebugUnitTest/
           retention-days: 7
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 3: Build APK Debug completo
+  # Solo corre si los 2 jobs anteriores pasaron.
+  # Genera el APK descargable desde la pestaña Artifacts de GitHub.
+  # ──────────────────────────────────────────────────────────────────────────
+  build-apk:
+    name: "📦 Build APK Debug"
+    runs-on: ubuntu-latest
+    needs: unit-tests   # Requiere compilación + tests OK
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Permisos gradlew
+        run: chmod +x gradlew
+
+      - name: Build APK Debug (assembleDebug)
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Tamaño del APK
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          SIZE=$(du -sh "$APK" | cut -f1)
+          echo "APK_SIZE=$SIZE" >> $GITHUB_ENV
+          echo "📦 APK generado: $SIZE"
+
+      - name: Subir APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: "fenix-ia-debug-${{ github.sha }}"
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Resumen final
+        run: |
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          echo "### ✅ APK listo para instalar" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tamaño | $APK_SIZE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`$SHORT_SHA\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Artefacto | \`fenix-ia-debug-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⬇️ Descargá el APK desde la pestaña **Artifacts** de esta run." >> $GITHUB_STEP_SUMMARY
+          echo "Luego instalalo con:" >> $GITHUB_STEP_SUMMARY
+          echo '```powershell' >> $GITHUB_STEP_SUMMARY
+          echo 'adb install -r app-debug.apk' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

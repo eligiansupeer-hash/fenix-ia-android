@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Rutas autorizadas para FileProvider.
+    Permite compartir archivos en el directorio de Downloads del app
+    con el instalador del sistema para la actualización OTA.
+
+    external-files-path → Environment.DIRECTORY_DOWNLOADS dentro de getExternalFilesDir()
+    Esto coincide con setDestinationInExternalFilesDir() en UpdateChecker.downloadAndInstall()
+-->
+<paths>
+    <external-files-path
+        name="fenix_downloads"
+        path="Download/" />
+</paths>

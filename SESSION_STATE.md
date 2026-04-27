@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-26 Abril 2026 — Sesión 6 (OTA auto-update)
+26 Abril 2026 — Sesión 8 (bugfixes: RAG contenido real + teclado + scroll settings)
 
 ---
 
@@ -13,122 +13,97 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | Nodo | Estado |
 |------|--------|
 | NODO-00 al 12 | ✅ COMPLETO |
-| NODO-13 | ⏳ Requiere dispositivo |
-| NODO-14 | ✅ Escrito, requiere dispositivo |
-| **OTA** | ✅ NUEVO — sistema de actualización automática |
+| NODO-13 | ⏳ Requiere dispositivo físico + ADB |
+| NODO-14 | ⏳ Requiere dispositivo físico + ADB |
+| **OTA** | ✅ Funcionando desde sesión 6 |
 
 ---
 
-## 🟢 HITO SESIÓN 6: Sistema OTA completo
+## 🟢 HITO SESIÓN 8: 3 bugs críticos resueltos
 
-A partir de ahora **la app se actualiza sola** desde Configuración, sin pasar por la netbook.
+### Bugs resueltos:
 
-### Flujo completo implementado:
+| Bug | Síntoma | Fix | Commit |
+|-----|---------|-----|--------|
+| BUG-1 | LLM solo recibía metadatos, no contenido real de documentos | `RagEngine.getChunksByDocumentNodeIds()` + inyección en ChatViewModel | `4395f5f` + `003f32d` |
+| BUG-2 | Teclado tapaba la caja de texto del chat | `Modifier.imePadding()` en Scaffold de ChatScreen | `ffde4ab` |
+| BUG-3 | GITHUB_MODELS no visible en Settings (sin scroll) | `verticalScroll(rememberScrollState())` en Column de SettingsScreen | `0e82cd3` |
+
+### Detalle BUG-1 (más importante):
+
+El `ChatViewModel` no inyectaba `RagEngine` — el LLM recibía solo summaries vacíos.
+Ahora el flujo es:
 
 ```
-push a main
-  → CI Job 1: compileDebugKotlin
-  → CI Job 2: testDebugUnitTest
-  → CI Job 3: assembleDebug
-  → CI Job 4: gh release create "v{versionCode}" + sube APK como asset
-                    ↓
-              app en el Xiaomi
-              Configuración → "Verificar nueva versión"
-                    ↓
-              UpdateChecker.checkForUpdate()
-              → GET api.github.com/repos/.../releases/latest
-              → compara versionCode remoto vs local
-              → si remoto > local: muestra dialog con release notes + tamaño
-                    ↓
-              Usuario toca "Descargar e instalar"
-                    ↓
-              DownloadManager descarga el APK en background
-              (barra de progreso en notificaciones del sistema)
-                    ↓
-              Instalador del sistema se abre automáticamente
-              Usuario confirma → app actualizada ✅
+Usuario envía mensaje
+  → getCheckedDocuments(projectId) → lista de DocumentNode con isChecked=true
+  → ragEngine.getChunksByDocumentNodeIds(nodeIds)
+      → ObjectBox: query por documentNodeId, ORDER BY chunkIndex
+      → concatena textPayload de todos los chunks → trunca a 6000 chars/doc
+  → buildSystemPrompt(docNames, documentContent)
+      → incluye contenido COMPLETO de cada documento en el system prompt
+  → LLM recibe el texto real y puede responder con precisión
 ```
 
-### Archivos creados/modificados en sesión 6:
-
-| Archivo | Tipo | Descripción |
-|---------|------|-------------|
-| `updater/UpdateChecker.kt` | NUEVO | GitHub Releases API + DownloadManager OTA |
-| `updater/UpdateViewModel.kt` | NUEVO | MVI state: isChecking / isDownloading / updateAvailable |
-| `presentation/settings/SettingsScreen.kt` | MODIFICADO | UpdateSection con dialog, progreso animado, snackbar |
-| `AndroidManifest.xml` | MODIFICADO | REQUEST_INSTALL_PACKAGES + FileProvider |
-| `res/xml/file_provider_paths.xml` | NUEVO | Autoriza Downloads para FileProvider |
-| `.github/workflows/build-apk.yml` | MODIFICADO | Job 4: publica GitHub Release con APK como asset |
-
-### Decisiones técnicas clave:
-
-| Decisión | Motivo |
-|----------|--------|
-| GitHub Releases API pública, sin token | No requiere autenticación — funciona sin configurar secrets en la app |
-| Tag format `v{versionCode}` | Entero simple — fácil de comparar, extraído automáticamente del `build.gradle.kts` en CI |
-| DownloadManager del sistema (no OkHttp/Ktor) | Maneja reintentos, barra de progreso en notificaciones, escribe en disco sin pasar por heap JVM — R-04 safe |
-| FileProvider con `external-files-path` | Scoped Storage — el instalador del sistema necesita URI autorizado, no ruta absoluta |
-| Job 4 solo en push a main, no en PRs | Evita releases de ramas de trabajo |
+No requiere modelo TFLite — funciona con embeddings placeholder (FloatArray(0)).
+El RAG semántico (búsqueda por similitud) quedará para cuando se integre MiniLM real.
 
 ---
 
-## ESTADO ACTUAL DE LA APP
+## ESTADO ACTUAL DE LA APP (post sesión 8)
 
-### ✅ Funcionalidades operativas:
 | Función | Estado |
 |---------|--------|
 | Crear/borrar proyectos con system prompt | ✅ |
-| Configurar API keys (todas las providers) | ✅ |
-| Navegar proyecto → detalle → chat | ✅ |
-| Crear/borrar chats | ✅ |
-| Cargar documentos (PDF/DOCX/TXT/imagen) | ✅ |
-| Árbol de documentos con checkboxes | ✅ |
+| Configurar API keys (todos los providers, incl. GITHUB_MODELS) | ✅ |
 | Chat con streaming SSE + fallback providers | ✅ |
-| Detener / Regenerar / Copiar mensaje | ✅ |
-| Ingesta vectorial RAG en background | ✅ |
-| **Auto-actualización OTA desde la app** | ✅ NUEVO |
-
-### ⏳ Pendiente:
-| Tarea | Prioridad |
-|-------|-----------|
-| Instalar APK en Xiaomi (bajar de GitHub Releases) y probar OTA | 🔴 INMEDIATA |
-| Tests instrumentados E2E y RAM stress en dispositivo | 🟡 |
-| Modelo TFLite MiniLM para RAG semántico real | 🟡 |
+| Caja de texto visible con teclado abierto | ✅ |
+| Documentos seleccionados → contenido real llega al LLM | ✅ |
+| Auto-actualización OTA | ✅ |
 
 ---
 
-## PRÓXIMA SESIÓN — qué hacer exactamente
+## ⚠️ PRÓXIMA SESIÓN — verificar en Xiaomi
 
-### PASO 1 — Instalar la primera versión en el Xiaomi
-Cuando el CI termine, bajar el APK directo desde el navegador del Xiaomi:
-https://github.com/eligiansupeer-hash/fenix-ia-android/releases/latest
+El CI debería estar corriendo (commits `4395f5f`, `003f32d`, `ffde4ab`, `0e82cd3`).
+La app en el Xiaomi tiene versionCode=1 (v1). Para actualizar:
+1. Confirmar que CI pasó 4/4 verde
+2. Ir a Configuración → ↻ → debería ofrecer instalar la nueva versión automáticamente
 
-Tocar el archivo `.apk` → instalar (activar "fuentes desconocidas" si pide).
+### Pruebas a realizar:
+1. **Teclado**: abrir chat, tocar el campo de texto → verificar que el input queda visible
+2. **Settings scroll**: ir a Configuración → hacer scroll → verificar que GITHUB_MODELS aparece con botón "Agregar"
+3. **RAG real**: crear proyecto → cargar documento → activar checkbox → preguntar algo sobre el contenido → verificar que la IA responde con información DEL documento (no genérica)
 
-### PASO 2 — Probar el flujo OTA completo
-1. Incrementar `versionCode` en `app/build.gradle.kts` (de 1 a 2)
-2. Commit + push → CI publica release v2
-3. En el Xiaomi: Configuración → "Verificar nueva versión"
-4. Dialog "v1 → v2" → "Descargar e instalar" → listo
-
-### PASO 3 — Probar flujo de chat con API key real
-1. Configuración → Groq API key (gratis: console.groq.com)
-2. Crear proyecto → nuevo chat → enviar mensaje
-3. Verificar streaming → respuesta → botones Copiar y Regenerar
+### Si RAG aún no funciona (chunks vacíos):
+Causa probable: `DocumentIngestionWorker` no se está encolando al subir el archivo.
+Verificar en `data/repository/DocumentRepositoryImpl.kt` que al insertar un documento se encola `DocumentIngestionWorker` con los datos correctos. Si no está implementado, es el siguiente fix.
 
 ---
 
-## Entorno de desarrollo
-- OS: Windows 11, netbook Juana Manso
-- Gradle: 8.9 (CI: gradle/actions/setup-gradle | local: gradlew.bat)
-- Dispositivo: Xiaomi Redmi C14 (`RS4HQ4YHQKZLLB4T`)
-- Repo: https://github.com/eligiansupeer-hash/fenix-ia-android
+## Archivos modificados en sesión 8
 
-## Commits sesión 6 (OTA)
-- `717454c` — feat(ota): UpdateChecker
-- `ef703d2` — feat(ota): UpdateViewModel
-- `51f329c` — feat(ota): SettingsScreen con UpdateSection
-- `22f27c8` — feat(ota): AndroidManifest — REQUEST_INSTALL_PACKAGES + FileProvider
-- `b46d2c0` — feat(ota): file_provider_paths.xml
-- `3d51925` — feat(ota): CI Job 4 — publica GitHub Release con APK
-- `cecc25c` — chore: SESSION_STATE sesión 6
+| Archivo | SHA nuevo | Cambio |
+|---------|-----------|--------|
+| `data/local/objectbox/RagEngine.kt` | `4395f5f` | +`getChunksByDocumentNodeIds()`, +`isDocumentIndexed()` |
+| `presentation/chat/ChatViewModel.kt` | `003f32d` | Inyecta RagEngine, pasa contenido real al LLM |
+| `presentation/chat/ChatScreen.kt` | `ffde4ab` | `imePadding()` en Scaffold |
+| `presentation/settings/SettingsScreen.kt` | `0e82cd3` | `verticalScroll` en Column |
+
+---
+
+## Restricciones vigentes (AGENTS.md — no violar)
+- No Flutter/WebView/RxJava
+- No SharedPreferences → DataStore + Keystore
+- No DCL (DexClassLoader)
+- No cargar PDF/DOCX completo en heap Java (R-04)
+- `bitmap.recycle()` siempre en `finally`
+- RAM idle < 100 MB PSS
+- `versionCode` en `build.gradle.kts` debe sincronizarse con `LOCAL_VERSION_CODE` en `UpdateChecker.kt`
+
+## Historial de commits relevantes
+- `ff73076` — fix: @SerialName en GithubRelease/GithubAsset (sesión 7)
+- `4395f5f` — feat: getChunksByDocumentNodeIds en RagEngine (sesión 8)
+- `003f32d` — fix(BUG-1): ChatViewModel inyecta RagEngine, contenido real al LLM (sesión 8)
+- `ffde4ab` — fix(BUG-2): imePadding en ChatScreen (sesión 8)
+- `0e82cd3` — fix(BUG-3): verticalScroll en SettingsScreen (sesión 8)

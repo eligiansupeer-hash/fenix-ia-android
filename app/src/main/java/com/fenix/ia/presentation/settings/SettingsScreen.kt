@@ -2,6 +2,8 @@ package com.fenix.ia.presentation.settings
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
@@ -28,7 +30,6 @@ fun SettingsScreen(
     val updateState by updateViewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Snackbar para errores de actualización
     LaunchedEffect(updateState.error) {
         updateState.error?.let {
             snackbarHostState.showSnackbar(it, duration = SnackbarDuration.Long)
@@ -36,7 +37,6 @@ fun SettingsScreen(
         }
     }
 
-    // Dialog de actualización disponible
     val update = updateState.updateAvailable
     if (update != null) {
         UpdateAvailableDialog(
@@ -62,15 +62,16 @@ fun SettingsScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
+        // verticalScroll: GITHUB_MODELS y cualquier card expandido son accesibles
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
-            // ── Sección: Actualización OTA ──────────────────────────────────
             UpdateSection(
                 isChecking = updateState.isChecking,
                 isDownloading = updateState.isDownloading,
@@ -82,7 +83,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Sección: API Keys ───────────────────────────────────────────
             Text("API Keys", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Las claves se cifran con AES-256-GCM en el hardware TEE del dispositivo.",
@@ -98,13 +98,12 @@ fun SettingsScreen(
                     onDelete = { viewModel.deleteKey(provider) }
                 )
             }
+
+            // Espacio extra al final para que el último card sea cómodo de usar
+            Spacer(modifier = Modifier.height(32.dp))
         }
     }
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// Sección OTA
-// ───────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun UpdateSection(
@@ -198,10 +197,6 @@ private fun UpdateSection(
 
 private enum class UpdateUiPhase { IDLE, CHECKING, DOWNLOADING, UP_TO_DATE, INSTALL_READY }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Dialog de confirmación
-// ───────────────────────────────────────────────────────────────────────────
-
 @Composable
 private fun UpdateAvailableDialog(
     currentVersion: Int,
@@ -236,10 +231,6 @@ private fun UpdateAvailableDialog(
         }
     )
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// ApiKeyField (sin cambios)
-// ───────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun ApiKeyField(

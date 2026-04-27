@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-26 Abril 2026 — Sesión 4
+26 Abril 2026 — Sesión 5 (fix CI)
 
 ---
 
@@ -20,146 +20,136 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | NODO-05 | ✅ COMPLETO | `data/local/objectbox/` — DocumentChunk, RagEngine, EmbeddingModel |
 | NODO-06 | ✅ COMPLETO | `ingestion/DocumentIngestionWorker.kt` |
 | NODO-07 | ✅ COMPLETO | `data/remote/LlmInferenceRouter.kt` |
-| NODO-08 | ✅ COMPLETO | `presentation/chat/ChatViewModel.kt` + `ChatScreen.kt` (actualizado sesión 4) |
+| NODO-08 | ✅ COMPLETO | `presentation/chat/ChatViewModel.kt` + `ChatScreen.kt` |
 | NODO-09 | ✅ COMPLETO | `presentation/sdui/` |
 | NODO-10 | ✅ COMPLETO | `sandbox/PolicyEngine.kt` + `DynamicExecutionEngine.kt` |
 | NODO-11 | ✅ COMPLETO | `data/local/ArtifactManager.kt` |
-| NODO-12 | ✅ TESTS PASANDO | BUILD SUCCESSFUL — todos los tests JVM OK |
-| NODO-13 | ⏳ PENDIENTE TEST | RAM idle medida: 172 MB debug (aceptable — release será ~60% menos) |
-| NODO-14 | ✅ TESTS ESCRITOS | `E2ESmokeTest.kt` — 6 tests listos, requieren rebuild + dispositivo conectado |
+| NODO-12 | ✅ COMPLETO | 6 tests unitarios JVM — BUILD SUCCESSFUL ✅ |
+| NODO-13 | ⏳ PENDIENTE | `MemoryStressTest.kt` escrito — requiere dispositivo conectado |
+| NODO-14 | ✅ ESCRITO | `E2ESmokeTest.kt` (6 tests) — requiere dispositivo conectado |
+
+---
+
+## 🟢 HITO: CI PIPELINE 100% VERDE
+
+**Commit:** `e1b7023` — fix(nodo-06): corregir ProjectDetailViewModel
+
+Las tres etapas del pipeline pasaron en verde:
+- ✅ **Job 1 — Compilar Kotlin** (`compileDebugKotlin`)
+- ✅ **Job 2 — Tests Unitarios JVM** (`testDebugUnitTest`)
+- ✅ **Job 3 — Build APK Debug** (`assembleDebug`)
+
+El APK está disponible como artefacto en:
+https://github.com/eligiansupeer-hash/fenix-ia-android/actions
+
+---
+
+## Causa del último error CI (ya corregido)
+
+`ProjectDetailViewModel.kt` estaba desincronizado con la arquitectura real:
+
+| Problema | Causa | Fix |
+|----------|-------|-----|
+| `No parameter 'absolutePath'` | `DocumentNode` usa `uri`, no `absolutePath` | Usa `uri = uri.toString()` |
+| `Unresolved reference 'KEY_FILE_PATH'` | Worker solo expone `KEY_DOCUMENT_ID` y `KEY_PROJECT_ID` | Usa `DocumentIngestionWorker.buildRequest()` |
+| `Argument type mismatch` en `workDataOf` | Pares construidos manualmente con tipos incorrectos | Delegado a `buildRequest()` que encapsula `WorkData` |
 
 ---
 
 ## Lo que hizo la sesión 4 (26 Abril 2026)
 
-### 7 commits — plomería para Regenerar + UX de chat completa
-
-#### Archivos MODIFICADOS:
-
-| Archivo | Cambio |
-|---------|--------|
-| `MessageDao.kt` | + `deleteMessageById(id)` — necesario para regenerar |
-| `MessageRepository.kt` | + `deleteMessage(id)` en la interfaz |
-| `MessageRepositoryImpl.kt` | + implementación `deleteMessage → dao.deleteMessageById` |
-| `ChatContract.kt` | `RegenerateLastMessage` ahora es `object` (no necesita chatId); + `DismissError` intent |
-| `ChatViewModel.kt` | Implementa `regenerateLastMessage()` + extrae `collectInferenceStream()` para evitar duplicación; DismissError limpia el error del estado |
-| `ChatScreen.kt` | **SnackbarHost** para errores de API; botones **Copiar** y **Regenerar** en el último mensaje del asistente; usa `LocalClipboardManager` |
-| `E2ESmokeTest.kt` | + Test 6: verifica que el botón Regenerar aparece y lanza streaming |
+### Funcionalidades agregadas:
+| Función | Archivo |
+|---------|---------|
+| `deleteMessageById` en DAO | `MessageDao.kt` |
+| `deleteMessage` en interfaz | `MessageRepository.kt` |
+| `deleteMessage` implementado | `MessageRepositoryImpl.kt` |
+| `RegenerateLastMessage` como `object` + `DismissError` | `ChatContract.kt` |
+| `regenerateLastMessage()` + `collectInferenceStream()` extraído | `ChatViewModel.kt` |
+| Snackbar errores + botones Copiar/Regenerar | `ChatScreen.kt` |
+| Test 6: Regenerar último mensaje | `E2ESmokeTest.kt` |
 
 ---
 
-## ESTADO ACTUAL DE LA APP (post sesión 4)
-
-### Flujo de navegación (sin cambios):
-```
-ProjectListScreen → [tap proyecto] → ProjectDetailScreen → [tap chat] → ChatScreen
-                                   → [ícono upload] → FilePicker → ingestión WorkManager
-```
+## ESTADO ACTUAL DE LA APP
 
 ### ✅ Funcionalidades operativas:
 | Función | Estado |
 |---------|--------|
 | Crear/borrar proyectos con system prompt | ✅ |
 | Configurar API keys (todas las providers) | ✅ |
-| Navegar de proyecto → detalle → chat | ✅ |
+| Navegar proyecto → detalle → chat | ✅ |
 | Crear/borrar chats dentro de un proyecto | ✅ |
-| Cargar documentos (PDF/DOCX/TXT/XLSX/imagen) | ✅ |
+| Cargar documentos (PDF/DOCX/TXT/imagen) | ✅ |
 | Árbol de documentos con checkboxes | ✅ |
 | Panel de contexto en chat con badge | ✅ |
-| Chatear con la IA con streaming SSE | ✅ |
+| Chatear con IA con streaming SSE | ✅ |
 | Fallback automático entre providers | ✅ |
 | Detener streaming | ✅ |
-| **Regenerar último mensaje** | ✅ NEW sesión 4 |
-| **Copiar mensaje del asistente** | ✅ NEW sesión 4 |
-| **Snackbar de errores de API** | ✅ NEW sesión 4 |
-| Ingesta vectorial (RAG) en background | ✅ vía WorkManager |
+| Regenerar último mensaje | ✅ |
+| Copiar mensaje del asistente | ✅ |
+| Snackbar de errores de API | ✅ |
+| Ingesta vectorial (RAG) en background | ✅ |
 
 ### ⏳ Pendiente:
 | Tarea | Prioridad |
 |-------|-----------|
-| **Rebuild + reinstalar APK** con los cambios de sesiones 3 y 4 | 🔴 INMEDIATA |
-| Probar chat con API key real y medir streaming | 🔴 INMEDIATA |
-| Tests instrumentados E2E (NODO-14) — ya escritos, falta correrlos | 🟡 IMPORTANTE |
-| Build release y medir RAM real (target < 100 MB) | 🟡 IMPORTANTE |
-| Modelo TFLite `minilm_l6_v2_quantized.tflite` (RAG semántico real) | 🟡 |
-| Exportar artefactos generados por IA (ArtifactManager UI) | 🟢 MEJORA |
+| Instalar APK en Xiaomi y probar flujo real | 🔴 INMEDIATA |
+| Tests instrumentados E2E (NODO-14) en dispositivo | 🟡 |
+| Medir RAM en release build (objetivo < 100 MB PSS) | 🟡 |
+| Integrar modelo TFLite MiniLM (RAG semántico real) | 🟡 |
+| UI para exportar artefactos generados | 🟢 |
 
 ---
 
 ## PRÓXIMA SESIÓN — qué hacer exactamente
 
-### PASO 1 — Rebuild e instalar (netbook con celular conectado por USB)
+### PASO 1 — Bajar el APK del CI y instalarlo
+El APK compilado está disponible en GitHub Actions (14 días):
+https://github.com/eligiansupeer-hash/fenix-ia-android/actions
+
+O rebuild local en la netbook:
 ```powershell
 cd C:\Users\eligi\fenix-ia-android
 git pull origin main
 .\gradlew.bat assembleDebug
-C:\Users\eligi\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r app\build\outputs\apk\debug\app-debug.apk
+adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
-*(~50 minutos en la netbook — dejarlo en background)*
 
 ### PASO 2 — Probar flujo completo en el Xiaomi
-1. Abrir la app → lista de proyectos
-2. Ir a Configuración → ingresar API key de Groq (gratis en console.groq.com)
-3. Crear un proyecto → nuevo chat → escribir un mensaje
-4. Verificar: streaming aparece → respuesta llega → botones Copiar y Regenerar visibles
-5. Tocar Regenerar → debe borrar la respuesta y generar una nueva
+1. Abrir app → Configuración → ingresar API key de Groq (gratis: console.groq.com)
+2. Crear proyecto → nuevo chat → enviar mensaje
+3. Verificar streaming → respuesta → botones Copiar y Regenerar
+4. Tocar Regenerar → debe borrar respuesta y generar nueva
 
-### PASO 3 — Tests E2E (si el celular está conectado con USB)
-```powershell
-.\gradlew.bat connectedDebugAndroidTest --tests "com.fenix.ia.E2ESmokeTest"
+### PASO 3 — Si hay error de íconos al compilar local
+```kotlin
+// Si Icons.Default.ContentCopy o Icons.Default.Refresh no compilan,
+// agregar en app/build.gradle.kts:
+implementation("androidx.compose.material:material-icons-extended")
 ```
-Los Tests 4 y 5 (startup + navegación sin crash) deben pasar sin API key real.
-Los Tests 1, 2, 6 necesitan API key configurada.
 
-### PASO 4 — Build release (para medir RAM real)
+### PASO 4 — Medir RAM en release
 ```powershell
 .\gradlew.bat assembleRelease
-# Firmar con debug keystore para instalar:
-C:\Users\eligi\AppData\Local\Android\Sdk\build-tools\35.0.0\apksigner.bat sign `
-  --ks C:\Users\eligi\.android\debug.keystore `
-  --ks-key-alias androiddebugkey `
-  --ks-pass pass:android `
-  app\build\outputs\apk\release\app-release-unsigned.apk
 adb install -r app\build\outputs\apk\release\app-release-unsigned.apk
-# Medir RAM:
 adb shell dumpsys meminfo com.fenix.ia | findstr "TOTAL PSS"
-# Objetivo: < 100 MB (100,000 KB)
-```
-
-### PASO 5 — Si hay errores de compilación en sesión 4
-Posibles problemas:
-- **`Icons.Default.ContentCopy` no encontrado** → importar `androidx.compose.material.icons.Icons` y asegurarse de tener `compose-material-icons-extended` en deps o usar `Icons.Outlined.ContentCopy`
-- **`Icons.Default.Refresh` no encontrado** → ídem
-- **`LocalClipboardManager` import** → es `androidx.compose.ui.platform.LocalClipboardManager`
-
-Si hay error de icons, solución rápida:
-```kotlin
-// En ChatScreen.kt, reemplazar los imports de icons específicos por:
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-// Y agregar en build.gradle.kts:
-implementation("androidx.compose.material:material-icons-extended")
+# Objetivo: < 100,000 KB (100 MB PSS)
 ```
 
 ---
 
-## Entorno de desarrollo (sin cambios)
+## Entorno de desarrollo
 - OS: Windows 11, netbook Juana Manso
 - Java: OpenJDK 17.0.18 (Temurin)
-- Gradle: 8.9 (wrapper)
+- Gradle: 8.9 (via gradle/actions/setup-gradle en CI, gradlew.bat local)
 - Android SDK: `C:\Users\eligi\AppData\Local\Android\Sdk`
-- ADB: `C:\Users\eligi\AppData\Local\Android\Sdk\platform-tools\adb.exe`
 - Repo local: `C:\Users\eligi\fenix-ia-android`
-- Dispositivo: Xiaomi Redmi C14 (RS4HQ4YHQKZLLB4T)
+- Dispositivo: Xiaomi Redmi C14 (`RS4HQ4YHQKZLLB4T`)
 
-## Commits sesión 4
-- `2474fdf` — feat: add deleteMessageById to MessageDao for regenerate support
-- `e96b4d9` — feat: add deleteMessage to MessageRepository interface
-- `9dd25cd` — feat: implement deleteMessage in MessageRepositoryImpl
-- `9602b4e` — feat: implement RegenerateLastMessage + extract collectInferenceStream + DismissError intent
-- `0fbe77e` — feat: add DismissError intent and fix RegenerateLastMessage to object
-- `45ac8d6` — feat: ChatScreen — Snackbar errors + copy/regenerate actions on last assistant message
-- `4ec609f` — test: E2ESmokeTest — agrega Test 6 regenerar último mensaje del asistente
+## Commits de esta sesión (sesión 5)
+- `e1b7023` — fix(nodo-06): corregir ProjectDetailViewModel — alinear con DocumentNode.uri y DocumentIngestionWorker.buildRequest()
+- `6abd451` — chore: actualizar SESSION_STATE.md (sesión anterior)
 
-## Todos los commits del proyecto
-Ver: https://github.com/eligiansupeer-hash/fenix-ia-android/commits/main
+## Todos los commits
+https://github.com/eligiansupeer-hash/fenix-ia-android/commits/main

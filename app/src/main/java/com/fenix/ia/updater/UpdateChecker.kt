@@ -15,6 +15,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -24,15 +25,11 @@ import kotlin.coroutines.resume
 
 /**
  * Verifica actualizaciones consultando la GitHub Releases API (pública, sin token).
- *
- * BuildConfig eliminado — VERSION_CODE y VERSION_NAME hardcodeados como constantes
- * para evitar la dependencia de buildFeatures { buildConfig = true }.
- * Cuando se suba una nueva versión, actualizar LOCAL_VERSION_CODE manualmente
- * en sincronía con versionCode en build.gradle.kts.
+ * Sin BuildConfig — usa constantes locales sincronizadas con build.gradle.kts.
  *
  * Flujo OTA:
  *   1. checkForUpdate() → compara LOCAL_VERSION_CODE vs tag remoto
- *   2. Si hay update → downloadAndInstall() via DownloadManager (sin heap JVM — R-04 safe)
+ *   2. Si hay update → downloadAndInstall() via DownloadManager (R-04 safe)
  *   3. DownloadManager notifica al completar → lanza instalador del sistema
  */
 @Singleton
@@ -175,9 +172,10 @@ class UpdateChecker @Inject constructor(
     }
 }
 
+// GitHub API devuelve snake_case — @SerialName obligatorio
 @Serializable
 private data class GithubRelease(
-    val tagName: String,
+    @SerialName("tag_name") val tagName: String,
     val body: String = "",
     val assets: List<GithubAsset> = emptyList()
 )
@@ -185,7 +183,7 @@ private data class GithubRelease(
 @Serializable
 private data class GithubAsset(
     val name: String,
-    val browserDownloadUrl: String,
+    @SerialName("browser_download_url") val browserDownloadUrl: String,
     val size: Long
 )
 

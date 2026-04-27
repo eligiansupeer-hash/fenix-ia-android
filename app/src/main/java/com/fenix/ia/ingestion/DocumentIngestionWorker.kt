@@ -7,6 +7,7 @@ import com.fenix.ia.data.local.db.dao.DocumentDao
 import com.fenix.ia.data.local.db.entities.DocumentEntity
 import com.fenix.ia.data.local.objectbox.RagEngine
 import com.fenix.ia.domain.model.DocumentNode
+import com.fenix.ia.presentation.projects.ProjectDetailViewModel
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +43,13 @@ class DocumentIngestionWorker @AssistedInject constructor(
             ?: return@withContext Result.failure(
                 workDataOf("error" to "documentId no proporcionado")
             )
-        val projectId = inputData.getLong(KEY_PROJECT_ID, -1L)
+
+        // Prioridad: usar projectIdString para derivar Long de forma consistente.
+        // Si no está disponible, usar el Long directo (retrocompatibilidad).
+        val projectId: Long = inputData.getString(KEY_PROJECT_ID_STRING)?.let {
+            deriveProjectIdLong(it)
+        } ?: inputData.getLong(KEY_PROJECT_ID, -1L)
+
         if (projectId == -1L) {
             return@withContext Result.failure(workDataOf("error" to "projectId invalido"))
         }
@@ -65,6 +72,8 @@ class DocumentIngestionWorker @AssistedInject constructor(
                 entity.mimeType.startsWith("text/") ->
                     extractPlainText(document)
                 else -> {
+                    // Tipo no soportado — marcamos como indexado igualmente para que
+                    // el documento salga de "procesando" en la UI
                     documentDao.markAsIndexed(documentId)
                     return@withContext Result.success(
                         workDataOf("info" to "Tipo MIME no soportado: ${entity.mimeType}")
@@ -73,8 +82,9 @@ class DocumentIngestionWorker @AssistedInject constructor(
             }
 
             if (rawText.isBlank()) {
+                // Documento vacío o sin texto extraíble — marcamos igualmente para salir de "procesando"
                 documentDao.markAsIndexed(documentId)
-                return@withContext Result.success(workDataOf("info" to "Documento vacio"))
+                return@withContext Result.success(workDataOf("info" to "Documento vacio o sin texto extraíble"))
             }
 
             ragEngine.indexDocument(
@@ -87,6 +97,11 @@ class DocumentIngestionWorker @AssistedInject constructor(
 
         }.onFailure { e ->
             android.util.Log.e(TAG, "Ingesta fallida para $documentId", e)
+            // Si superamos los reintentos, marcamos igualmente para que no quede en "procesando" siempre
+            if (runAttemptCount >= MAX_ATTEMPTS - 1) {
+                runCatching { documentDao.markAsIndexed(documentId) }
+                return@withContext Result.failure(workDataOf("error" to (e.message ?: "Error desconocido")))
+            }
             return@withContext Result.retry()
         }
 
@@ -103,13 +118,28 @@ class DocumentIngestionWorker @AssistedInject constructor(
     companion object {
         const val KEY_DOCUMENT_ID = "document_id"
         const val KEY_PROJECT_ID = "project_id"
+        const val KEY_PROJECT_ID_STRING = "project_id_string"
         private const val TAG = "DocumentIngestionWorker"
         private const val MAX_PLAIN_TEXT_CHARS = 200_000
+        private const val MAX_ATTEMPTS = 3
 
-        fun buildRequest(documentId: String, projectId: Long): OneTimeWorkRequest {
+        /**
+         * Deriva un Long consistente desde un UUID String para usar como projectId en ObjectBox.
+         * INVARIANTE: mismo cálculo que ProjectDetailViewModel.deriveProjectIdLong().
+         */
+        fun deriveProjectIdLong(projectId: String): Long {
+            return Math.abs(projectId.hashCode().toLong())
+        }
+
+        fun buildRequest(
+            documentId: String,
+            projectId: Long,
+            projectIdString: String = ""
+        ): OneTimeWorkRequest {
             val data = workDataOf(
                 KEY_DOCUMENT_ID to documentId,
-                KEY_PROJECT_ID to projectId
+                KEY_PROJECT_ID to projectId,
+                KEY_PROJECT_ID_STRING to projectIdString
             )
             return OneTimeWorkRequestBuilder<DocumentIngestionWorker>()
                 .setInputData(data)

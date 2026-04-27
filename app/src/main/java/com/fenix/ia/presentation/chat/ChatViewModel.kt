@@ -2,6 +2,7 @@ package com.fenix.ia.presentation.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.fenix.ia.data.local.objectbox.RagEngine
 import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
 import com.fenix.ia.data.remote.StreamEvent
@@ -22,7 +23,8 @@ import javax.inject.Inject
 class ChatViewModel @Inject constructor(
     private val llmRouter: LlmInferenceRouter,
     private val messageRepository: MessageRepository,
-    private val documentRepository: DocumentRepository
+    private val documentRepository: DocumentRepository,
+    private val ragEngine: RagEngine
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -73,12 +75,19 @@ class ChatViewModel @Inject constructor(
             )
             messageRepository.insertMessage(userMessage)
 
-            val documentArray = documentRepository
-                .getCheckedDocuments(currentProjectId)
-                .joinToString("\n") { "[${it.name}]: ${it.semanticSummary}" }
+            // Obtiene documentos seleccionados
+            val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
 
-            val estimatedTokens = estimateTokens(content + documentArray)
-            val provider = llmRouter.selectProvider(estimatedTokens, detectTaskType(content))
+            // Construye contexto real desde ObjectBox (no requiere embeddings)
+            val documentContent = if (checkedDocs.isNotEmpty()) {
+                val nodeIds = checkedDocs.map { it.id }
+                ragEngine.getChunksByDocumentNodeIds(nodeIds)
+            } else emptyMap()
+
+            val provider = llmRouter.selectProvider(
+                estimateTokens(content + documentContent.values.joinToString()),
+                detectTaskType(content)
+            )
 
             _uiState.update { it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null) }
 
@@ -88,17 +97,13 @@ class ChatViewModel @Inject constructor(
                 }
                 collectInferenceStream(
                     history = historyForInference,
-                    systemPrompt = buildSystemPrompt(documentArray),
+                    systemPrompt = buildSystemPrompt(checkedDocs.map { it.name }, documentContent),
                     provider = provider
                 )
             }
         }
     }
 
-    /**
-     * Borra el último mensaje del asistente y vuelve a lanzar la inferencia
-     * usando el historial actual (que termina en el último mensaje del usuario).
-     */
     private fun regenerateLastMessage() {
         viewModelScope.launch {
             if (_uiState.value.isStreaming) return@launch
@@ -106,40 +111,35 @@ class ChatViewModel @Inject constructor(
             val lastAssistant = messages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return@launch
             val lastUserContent = messages.lastOrNull { it.role == MessageRole.USER }?.content ?: return@launch
 
-            // Elimina del DB — el Flow actualizará la lista automáticamente
             messageRepository.deleteMessage(lastAssistant.id)
 
-            // Construye el historial sin el mensaje eliminado para la llamada inmediata
+            val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
+            val documentContent = if (checkedDocs.isNotEmpty()) {
+                ragEngine.getChunksByDocumentNodeIds(checkedDocs.map { it.id })
+            } else emptyMap()
+
+            val provider = llmRouter.selectProvider(
+                estimateTokens(lastUserContent + documentContent.values.joinToString()),
+                detectTaskType(lastUserContent)
+            )
+
             val historyWithoutLastAssistant = messages
                 .filter { it.id != lastAssistant.id }
                 .takeLast(20)
                 .map { LlmMessage(it.role.name.lowercase(), it.content) }
-
-            val documentArray = documentRepository
-                .getCheckedDocuments(currentProjectId)
-                .joinToString("\n") { "[${it.name}]: ${it.semanticSummary}" }
-
-            val provider = llmRouter.selectProvider(
-                estimateTokens(lastUserContent + documentArray),
-                detectTaskType(lastUserContent)
-            )
 
             _uiState.update { it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null) }
 
             streamingJob = viewModelScope.launch {
                 collectInferenceStream(
                     history = historyWithoutLastAssistant,
-                    systemPrompt = buildSystemPrompt(documentArray),
+                    systemPrompt = buildSystemPrompt(checkedDocs.map { it.name }, documentContent),
                     provider = provider
                 )
             }
         }
     }
 
-    /**
-     * Consume el Flow de StreamEvent e inserta el mensaje final en el DB.
-     * Usado tanto por sendMessage como por regenerateLastMessage.
-     */
     private suspend fun collectInferenceStream(
         history: List<LlmMessage>,
         systemPrompt: String,
@@ -196,11 +196,36 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun buildSystemPrompt(documentArray: String): String = buildString {
+    /**
+     * Construye el system prompt incluyendo el contenido real de los documentos seleccionados.
+     * documentContent: mapa nodeId → texto extraído (ya truncado a 6000 chars por doc en RagEngine).
+     * docNames: nombres de archivo para identificar cada sección.
+     */
+    private fun buildSystemPrompt(
+        docNames: List<String>,
+        documentContent: Map<String, String>
+    ): String = buildString {
         appendLine("Eres FENIX IA, un asistente inteligente.")
-        if (documentArray.isNotBlank()) {
-            appendLine("\nDOCUMENTOS DEL PROYECTO:")
-            appendLine(documentArray)
+
+        if (documentContent.isNotEmpty()) {
+            appendLine()
+            appendLine("═══════════════════════════════")
+            appendLine("CONTENIDO DE DOCUMENTOS CARGADOS")
+            appendLine("═══════════════════════════════")
+            appendLine("Tienes acceso COMPLETO al contenido de los siguientes documentos.")
+            appendLine("Úsalos para responder con precisión a las preguntas del usuario.")
+            appendLine()
+
+            documentContent.entries.forEachIndexed { index, (nodeId, content) ->
+                val name = docNames.getOrElse(index) { nodeId }
+                appendLine("--- DOCUMENTO: $name ---")
+                appendLine(content)
+                appendLine()
+            }
+
+            appendLine("═══════════════════════════════")
+            appendLine("FIN DE DOCUMENTOS")
+            appendLine("═══════════════════════════════")
         }
     }
 

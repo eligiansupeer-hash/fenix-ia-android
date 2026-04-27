@@ -9,7 +9,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import androidx.core.content.FileProvider
-import com.fenix.ia.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.*
 import io.ktor.client.call.*
@@ -26,15 +25,15 @@ import kotlin.coroutines.resume
 /**
  * Verifica actualizaciones consultando la GitHub Releases API (pública, sin token).
  *
+ * BuildConfig eliminado — VERSION_CODE y VERSION_NAME hardcodeados como constantes
+ * para evitar la dependencia de buildFeatures { buildConfig = true }.
+ * Cuando se suba una nueva versión, actualizar LOCAL_VERSION_CODE manualmente
+ * en sincronía con versionCode en build.gradle.kts.
+ *
  * Flujo OTA:
- *   1. checkForUpdate() → compara versionCode local vs tag remoto
- *   2. Si hay update → downloadAndInstall() via DownloadManager (sistema, sin heap JVM)
- *   3. DownloadManager notifica al completar → lanza el instalador del sistema
- *
- * Repositorio hardcodeado: eligiansupeer-hash/fenix-ia-android
- * Tag format esperado: "v{versionCode}" → ej: "v12"
- *
- * Sin dependencias nuevas: usa Ktor (ya en el proyecto) + DownloadManager (sistema Android).
+ *   1. checkForUpdate() → compara LOCAL_VERSION_CODE vs tag remoto
+ *   2. Si hay update → downloadAndInstall() via DownloadManager (sin heap JVM — R-04 safe)
+ *   3. DownloadManager notifica al completar → lanza instalador del sistema
  */
 @Singleton
 class UpdateChecker @Inject constructor(
@@ -45,20 +44,19 @@ class UpdateChecker @Inject constructor(
     companion object {
         private const val RELEASES_API =
             "https://api.github.com/repos/eligiansupeer-hash/fenix-ia-android/releases/latest"
-        private const val APK_ASSET_NAME = "app-debug.apk"  // nombre del artefacto en el release
+
+        // Sincronizar con versionCode / versionName en app/build.gradle.kts
+        const val LOCAL_VERSION_CODE = 1
+        const val LOCAL_VERSION_NAME = "1.0.0"
     }
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /**
-     * Consulta la última release de GitHub y compara con el versionCode instalado.
-     * Retorna UpdateInfo con los datos del release, o null si hay error de red.
-     */
     suspend fun checkForUpdate(): UpdateResult {
         return try {
             val response: HttpResponse = httpClient.get(RELEASES_API) {
                 header("Accept", "application/vnd.github.v3+json")
-                header("User-Agent", "FenixIA-Android/${BuildConfig.VERSION_NAME}")
+                header("User-Agent", "FenixIA-Android/$LOCAL_VERSION_NAME")
             }
 
             if (response.status.value != 200) {
@@ -67,28 +65,24 @@ class UpdateChecker @Inject constructor(
 
             val release = json.decodeFromString<GithubRelease>(response.body())
 
-            // Tag format "v{versionCode}" → extrae el número
             val remoteVersionCode = release.tagName
                 .removePrefix("v")
                 .toIntOrNull()
                 ?: return UpdateResult.Error("Tag inválido: ${release.tagName}")
 
-            val localVersionCode = BuildConfig.VERSION_CODE
-
-            if (remoteVersionCode <= localVersionCode) {
+            if (remoteVersionCode <= LOCAL_VERSION_CODE) {
                 return UpdateResult.UpToDate(
-                    currentVersion = localVersionCode,
+                    currentVersion = LOCAL_VERSION_CODE,
                     remoteVersion = remoteVersionCode
                 )
             }
 
-            // Busca el APK entre los assets del release
             val apkAsset = release.assets.firstOrNull {
                 it.name.endsWith(".apk", ignoreCase = true)
             } ?: return UpdateResult.Error("No se encontró APK en el release $remoteVersionCode")
 
             UpdateResult.UpdateAvailable(
-                currentVersion = localVersionCode,
+                currentVersion = LOCAL_VERSION_CODE,
                 newVersion = remoteVersionCode,
                 releaseNotes = release.body.take(500),
                 apkUrl = apkAsset.browserDownloadUrl,
@@ -100,13 +94,6 @@ class UpdateChecker @Inject constructor(
         }
     }
 
-    /**
-     * Descarga e instala el APK usando DownloadManager del sistema.
-     * DownloadManager maneja reintentos, progreso en la barra de notificaciones,
-     * y escribe el archivo directamente en disco sin pasar por el heap JVM (R-04 safe).
-     *
-     * Retorna cuando la descarga completó o falló.
-     */
     suspend fun downloadAndInstall(
         apkUrl: String,
         onProgress: (Int) -> Unit = {}
@@ -124,12 +111,11 @@ class UpdateChecker @Inject constructor(
                 "fenix-ia-update.apk"
             )
             setMimeType("application/vnd.android.package-archive")
-            addRequestHeader("User-Agent", "FenixIA-Android/${BuildConfig.VERSION_NAME}")
+            addRequestHeader("User-Agent", "FenixIA-Android/$LOCAL_VERSION_NAME")
         }
 
         val downloadId = downloadManager.enqueue(request)
 
-        // Receptor para cuando el DownloadManager termina
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
@@ -174,10 +160,6 @@ class UpdateChecker @Inject constructor(
         }
     }
 
-    /**
-     * Lanza el instalador del sistema con el APK descargado.
-     * Requiere REQUEST_INSTALL_PACKAGES (Android 8+) — el usuario confirma.
-     */
     private fun launchInstaller(localUri: String) {
         val apkFile = File(Uri.parse(localUri).path ?: return)
         val apkUri = FileProvider.getUriForFile(
@@ -193,27 +175,19 @@ class UpdateChecker @Inject constructor(
     }
 }
 
-// -----------------------------------------------------------------------
-// Modelos de respuesta de la GitHub API
-// -----------------------------------------------------------------------
-
 @Serializable
 private data class GithubRelease(
-    val tagName: String,        // "v12"
-    val body: String = "",      // release notes
+    val tagName: String,
+    val body: String = "",
     val assets: List<GithubAsset> = emptyList()
 )
 
 @Serializable
 private data class GithubAsset(
-    val name: String,                   // "app-debug.apk"
-    val browserDownloadUrl: String,     // URL directa de descarga
-    val size: Long                      // bytes
+    val name: String,
+    val browserDownloadUrl: String,
+    val size: Long
 )
-
-// -----------------------------------------------------------------------
-// Tipos de resultado
-// -----------------------------------------------------------------------
 
 sealed class UpdateResult {
     data class UpdateAvailable(
@@ -223,7 +197,6 @@ sealed class UpdateResult {
         val apkUrl: String,
         val apkSizeBytes: Long
     ) : UpdateResult()
-
     data class UpToDate(val currentVersion: Int, val remoteVersion: Int) : UpdateResult()
     data class Error(val message: String) : UpdateResult()
 }

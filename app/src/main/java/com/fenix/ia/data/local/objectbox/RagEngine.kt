@@ -25,10 +25,7 @@ class RagEngine @Inject constructor(
         documentNodeId: String,
         text: String
     ) = withContext(Dispatchers.Default) {
-        // Chunking: ~750 tokens con superposición de 75
         val chunks = chunkText(text, chunkSize = 750, overlap = 75)
-
-        // Procesa en lotes de 10 para evitar OOM
         chunks.chunked(10).forEachIndexed { batchIndex, batch ->
             val entities = batch.mapIndexed { i, chunkText ->
                 DocumentChunk(
@@ -46,7 +43,8 @@ class RagEngine @Inject constructor(
 
     /**
      * Búsqueda semántica por similaridad coseno.
-     * Retorna los N fragmentos más relevantes para la consulta.
+     * Requiere modelo TFLite cargado. Si los embeddings son placeholders,
+     * usar getChunksByDocumentNodeIds() como fallback.
      */
     suspend fun search(
         query: String,
@@ -54,8 +52,6 @@ class RagEngine @Inject constructor(
         limit: Int = 5
     ): List<DocumentChunk> = withContext(Dispatchers.Default) {
         val queryVector = embeddingModel.encode(query)
-
-        // ObjectBox HNSW: nearestNeighbors filtra por vector + condición projectId
         chunkBox.query(
             DocumentChunk_.embeddingVector.nearestNeighbors(queryVector, limit)
                 .and(DocumentChunk_.projectId.equal(projectId))
@@ -65,26 +61,50 @@ class RagEngine @Inject constructor(
     }
 
     /**
-     * Elimina todos los chunks de un proyecto.
-     * Usar al borrar proyecto o re-ingestar documentos.
+     * Obtiene el contenido textual de documentos por sus IDs de nodo Room.
+     * No requiere embeddings — funciona aunque el modelo TFLite sea placeholder.
+     * Retorna mapa documentNodeId → texto concatenado (truncado a maxCharsPerDoc).
+     *
+     * Usar como fuente de contexto para el LLM cuando RAG semántico no está disponible.
      */
+    suspend fun getChunksByDocumentNodeIds(
+        documentNodeIds: List<String>,
+        maxCharsPerDoc: Int = 6000
+    ): Map<String, String> = withContext(Dispatchers.IO) {
+        if (documentNodeIds.isEmpty()) return@withContext emptyMap()
+
+        documentNodeIds.associateWith { nodeId ->
+            val chunks = chunkBox
+                .query(DocumentChunk_.documentNodeId.equal(nodeId))
+                .order(DocumentChunk_.chunkIndex)
+                .build()
+                .use { q -> q.find() }
+
+            chunks
+                .joinToString("\n") { it.textPayload }
+                .take(maxCharsPerDoc)
+        }.filterValues { it.isNotBlank() }
+    }
+
+    /**
+     * Verifica si un documento ya fue indexado (tiene al menos un chunk).
+     */
+    suspend fun isDocumentIndexed(documentNodeId: String): Boolean = withContext(Dispatchers.IO) {
+        chunkBox.query(DocumentChunk_.documentNodeId.equal(documentNodeId))
+            .build().use { q -> q.count() > 0 }
+    }
+
     suspend fun deleteProjectChunks(projectId: Long) = withContext(Dispatchers.IO) {
         chunkBox.query(DocumentChunk_.projectId.equal(projectId))
             .build().use { q -> chunkBox.remove(q.find()) }
     }
 
-    /**
-     * Elimina los chunks de un documento específico.
-     */
     suspend fun deleteDocumentChunks(documentNodeId: String) = withContext(Dispatchers.IO) {
         chunkBox.query(DocumentChunk_.documentNodeId.equal(documentNodeId))
             .build().use { q -> chunkBox.remove(q.find()) }
     }
 
-    /**
-     * INVARIANTE: chunkSize 500-1000 tokens, overlap 50-100 tokens.
-     * La superposición preserva contexto semántico en fronteras de chunk.
-     */
+    /** INVARIANTE: chunkSize 500-1000 tokens, overlap 50-100 tokens. */
     internal fun chunkText(
         text: String,
         chunkSize: Int = 750,
@@ -99,7 +119,6 @@ class RagEngine @Inject constructor(
 
         val chunks = mutableListOf<String>()
         var start = 0
-
         while (start < words.size) {
             val end = minOf(start + chunkSize, words.size)
             chunks.add(words.subList(start, end).joinToString(" "))

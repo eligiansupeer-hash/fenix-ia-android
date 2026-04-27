@@ -17,6 +17,20 @@ import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Enrutador multi-proveedor con streaming SSE.
+ *
+ * IMPORTANTE — formatos de API:
+ *   • OpenAI-compatible (Groq, Mistral, OpenRouter, GitHub Models):
+ *       body → { model, stream, temperature, messages: [{role, content}] }
+ *       auth → Authorization: Bearer <key>
+ *
+ *   • Gemini (Google Generative Language API):
+ *       body → { contents: [{role, parts:[{text}]}], systemInstruction, generationConfig }
+ *       auth → x-goog-api-key: <key>  (NO usa Bearer)
+ *       roles → "user" / "model"  (NO "assistant")
+ *       endpoint → .../models/gemini-2.0-flash:streamGenerateContent?alt=sse
+ */
 @Singleton
 class LlmInferenceRouter @Inject constructor(
     private val httpClient: HttpClient,
@@ -25,8 +39,6 @@ class LlmInferenceRouter @Inject constructor(
     companion object {
         private const val LARGE_CONTEXT_TOKEN_THRESHOLD = 32_000
         private const val MAX_RETRY_ATTEMPTS = 3
-        // Límite de línea SSE: 1 MB cubre cualquier respuesta JSON de token.
-        // Ktor 2.3+ requiere el parámetro limit explícito en readUTF8Line.
         private const val SSE_LINE_LIMIT = 1024 * 1024
     }
 
@@ -59,7 +71,13 @@ class LlmInferenceRouter @Inject constructor(
 
         val endpoint = getEndpoint(provider)
         val actualModel = model ?: getDefaultModel(provider)
-        val requestBody = buildRequestBody(messages, systemPrompt, actualModel, temperature)
+
+        // Gemini usa un cuerpo y header de autenticación completamente distintos
+        val requestBody = if (provider == ApiProvider.GEMINI) {
+            buildGeminiRequestBody(messages, systemPrompt, temperature)
+        } else {
+            buildOpenAiRequestBody(messages, systemPrompt, actualModel, temperature)
+        }
 
         var attempt = 0
         var success = false
@@ -68,7 +86,12 @@ class LlmInferenceRouter @Inject constructor(
             attempt++
             try {
                 httpClient.preparePost(endpoint) {
-                    header(HttpHeaders.Authorization, "Bearer $apiKey")
+                    // Auth header diferente según proveedor
+                    if (provider == ApiProvider.GEMINI) {
+                        header("x-goog-api-key", apiKey)
+                    } else {
+                        header(HttpHeaders.Authorization, "Bearer $apiKey")
+                    }
                     header(HttpHeaders.Accept, "text/event-stream")
                     contentType(ContentType.Application.Json)
                     setBody(requestBody)
@@ -83,7 +106,6 @@ class LlmInferenceRouter @Inject constructor(
                     }
                     val channel = response.bodyAsChannel()
                     while (!channel.isClosedForRead) {
-                        // Ktor 2.3+ requiere limit explícito en readUTF8Line
                         val line = channel.readUTF8Line(limit = SSE_LINE_LIMIT) ?: break
                         if (line.startsWith("data: ")) {
                             val data = line.removePrefix("data: ").trim()
@@ -97,6 +119,11 @@ class LlmInferenceRouter @Inject constructor(
                             }
                         }
                     }
+                    // Gemini no envía [DONE] — el stream cierra simplemente
+                    if (!success && channel.isClosedForRead) {
+                        emit(StreamEvent.Done)
+                        success = true
+                    }
                 }
             } catch (e: IOException) {
                 if (attempt >= MAX_RETRY_ATTEMPTS) {
@@ -107,7 +134,14 @@ class LlmInferenceRouter @Inject constructor(
         }
     }.flowOn(Dispatchers.IO)
 
-    private fun buildRequestBody(
+    // ── Builders de cuerpo de request ────────────────────────────────────────
+
+    /**
+     * Formato OpenAI-compatible: Groq, Mistral, OpenRouter, GitHub Models.
+     * Groq soporta documentos como texto en el system prompt (no adjuntos binarios).
+     * El contenido RAG ya viene inyectado en systemPrompt desde ChatViewModel.
+     */
+    private fun buildOpenAiRequestBody(
         messages: List<LlmMessage>,
         systemPrompt: String,
         model: String,
@@ -132,20 +166,72 @@ class LlmInferenceRouter @Inject constructor(
         })
     }
 
+    /**
+     * Formato Gemini (Google Generative Language API).
+     * Diferencias críticas respecto a OpenAI:
+     *   • Campo raíz: "contents" (no "messages")
+     *   • Cada item: { role, parts: [{ text }] }
+     *   • Roles: "user" y "model" (NO "assistant")
+     *   • System prompt → campo separado "systemInstruction"
+     *   • Parámetros de generación → "generationConfig"
+     *   • NO incluye campo "stream" en el body (el streaming se controla por ?alt=sse)
+     */
+    private fun buildGeminiRequestBody(
+        messages: List<LlmMessage>,
+        systemPrompt: String,
+        temperature: Float
+    ): String {
+        return Json.encodeToString(buildJsonObject {
+
+            // systemInstruction es un campo separado en Gemini
+            if (systemPrompt.isNotBlank()) {
+                putJsonObject("systemInstruction") {
+                    putJsonArray("parts") {
+                        addJsonObject { put("text", systemPrompt) }
+                    }
+                }
+            }
+
+            // contents: historial de conversación
+            // Gemini requiere que la conversación empiece con "user" y alterne user/model
+            putJsonArray("contents") {
+                messages.forEach { msg ->
+                    // Gemini usa "model" donde OpenAI usa "assistant"
+                    val geminiRole = if (msg.role == "assistant") "model" else msg.role
+                    addJsonObject {
+                        put("role", geminiRole)
+                        putJsonArray("parts") {
+                            addJsonObject { put("text", msg.content) }
+                        }
+                    }
+                }
+            }
+
+            putJsonObject("generationConfig") {
+                put("temperature", temperature)
+                put("maxOutputTokens", 8192)
+                put("topP", 0.95)
+            }
+        })
+    }
+
+    // ── Parser de delta SSE ───────────────────────────────────────────────────
+
     private fun parseStreamDelta(data: String, provider: ApiProvider): String? {
         return try {
-            val json = Json.parseToJsonElement(data).jsonObject
+            val json = Json { ignoreUnknownKeys = true }.parseToJsonElement(data).jsonObject
             when (provider) {
                 ApiProvider.GEMINI -> {
+                    // Gemini SSE: { candidates: [{ content: { parts: [{ text }] } }] }
                     json["candidates"]?.jsonArray?.firstOrNull()
                         ?.jsonObject?.get("content")
                         ?.jsonObject?.get("parts")
                         ?.jsonArray?.firstOrNull()
                         ?.jsonObject?.get("text")
-                        ?.jsonPrimitive?.content
+                        ?.jsonPrimitive?.contentOrNull
                 }
                 else -> {
-                    // OpenAI-compatible (Groq, Mistral, OpenRouter, GitHub Models)
+                    // OpenAI-compatible: { choices: [{ delta: { content } }] }
                     json["choices"]?.jsonArray?.firstOrNull()
                         ?.jsonObject?.get("delta")
                         ?.jsonObject?.get("content")
@@ -153,20 +239,29 @@ class LlmInferenceRouter @Inject constructor(
                 }
             }
         } catch (e: Exception) {
-            null // Ignora líneas malformadas del stream
+            null // Ignora líneas SSE malformadas
         }
     }
 
+    // ── Configuración por proveedor ───────────────────────────────────────────
+
     internal fun getEndpoint(provider: ApiProvider): String = when (provider) {
-        ApiProvider.GEMINI -> "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
-        ApiProvider.GROQ -> "https://api.groq.com/openai/v1/chat/completions"
-        ApiProvider.MISTRAL -> "https://api.mistral.ai/v1/chat/completions"
-        ApiProvider.OPENROUTER -> "https://openrouter.ai/api/v1/chat/completions"
-        ApiProvider.GITHUB_MODELS -> "https://models.inference.ai.azure.com/chat/completions"
+        // gemini-2.0-flash: modelo estable con 1M token context window
+        // alt=sse: activa Server-Sent Events (streaming)
+        ApiProvider.GEMINI ->
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse"
+        ApiProvider.GROQ ->
+            "https://api.groq.com/openai/v1/chat/completions"
+        ApiProvider.MISTRAL ->
+            "https://api.mistral.ai/v1/chat/completions"
+        ApiProvider.OPENROUTER ->
+            "https://openrouter.ai/api/v1/chat/completions"
+        ApiProvider.GITHUB_MODELS ->
+            "https://models.inference.ai.azure.com/chat/completions"
     }
 
     internal fun getDefaultModel(provider: ApiProvider): String = when (provider) {
-        ApiProvider.GEMINI -> "gemini-2.5-flash"
+        ApiProvider.GEMINI -> "gemini-2.0-flash"
         ApiProvider.GROQ -> "llama-3.3-70b-versatile"
         ApiProvider.MISTRAL -> "mistral-large-latest"
         ApiProvider.OPENROUTER -> "meta-llama/llama-3.3-70b-instruct:free"

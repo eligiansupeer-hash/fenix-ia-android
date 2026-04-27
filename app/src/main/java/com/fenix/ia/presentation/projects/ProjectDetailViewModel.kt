@@ -122,10 +122,15 @@ class ProjectDetailViewModel @Inject constructor(
                 )
                 documentRepository.insertDocument(doc)
 
-                // Usa buildRequest() del companion object — encapsula la WorkData correctamente
+                // CORRECCION: el Worker necesita el projectId como String.
+                // Usamos un campo separado KEY_PROJECT_ID_STRING para que el Worker
+                // pueda indexar en ObjectBox con un Long derivado del UUID de forma consistente.
+                // Derivamos el Long como abs(UUID.hashCode()) — mismo cálculo en Worker y aquí.
+                val projectIdLong = deriveProjectIdLong(projectId)
                 val request = DocumentIngestionWorker.buildRequest(
                     documentId = docId,
-                    projectId = projectId.hashCode().toLong()
+                    projectId = projectIdLong,
+                    projectIdString = projectId
                 )
                 androidx.work.WorkManager.getInstance(context).enqueue(request)
 
@@ -191,5 +196,16 @@ class ProjectDetailViewModel @Inject constructor(
                 if (idx >= 0) cursor.getLong(idx) else 0L
             } else 0L
         } ?: 0L
+    }
+
+    companion object {
+        /**
+         * Deriva un Long consistente desde un UUID String para usar como projectId en ObjectBox.
+         * INVARIANTE: mismo cálculo que DocumentIngestionWorker.deriveProjectIdLong().
+         * Se usa Math.abs para evitar negativos (ObjectBox rechaza IDs negativos).
+         */
+        fun deriveProjectIdLong(projectId: String): Long {
+            return Math.abs(projectId.hashCode().toLong())
+        }
     }
 }

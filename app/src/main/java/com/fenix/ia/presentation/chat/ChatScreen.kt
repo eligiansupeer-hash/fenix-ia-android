@@ -45,14 +45,12 @@ fun ChatScreen(
         viewModel.loadChat(chatId, projectId)
     }
 
-    // Auto-scroll al último mensaje cuando crece la lista
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.size - 1)
         }
     }
 
-    // Muestra errores de la API como Snackbar y los descarta del estado
     LaunchedEffect(uiState.error) {
         uiState.error?.let { errorMsg ->
             snackbarHostState.showSnackbar(
@@ -80,7 +78,9 @@ fun ChatScreen(
         }
     }
 
+    // imePadding() en el Scaffold: el bottomBar sube sobre el teclado
     Scaffold(
+        modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
@@ -265,13 +265,11 @@ private fun MessageBubble(
             }
         }
 
-        // Acciones del último mensaje del asistente
         if (showActions) {
             Row(
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Copiar
                 IconButton(
                     onClick = { clipboardManager.setText(AnnotatedString(message.content)) },
                     modifier = Modifier.size(28.dp)
@@ -283,7 +281,6 @@ private fun MessageBubble(
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
                 }
-                // Regenerar
                 IconButton(
                     onClick = onRegenerate,
                     modifier = Modifier.size(28.dp)

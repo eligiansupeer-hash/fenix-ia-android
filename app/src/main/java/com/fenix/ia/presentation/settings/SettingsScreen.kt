@@ -1,34 +1,66 @@
 package com.fenix.ia.presentation.settings
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.ApiProvider
+import com.fenix.ia.updater.UpdateIntent
+import com.fenix.ia.updater.UpdateViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
-    viewModel: SettingsViewModel = hiltViewModel()
+    viewModel: SettingsViewModel = hiltViewModel(),
+    updateViewModel: UpdateViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val updateState by updateViewModel.uiState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Snackbar para errores de actualización
+    LaunchedEffect(updateState.error) {
+        updateState.error?.let {
+            snackbarHostState.showSnackbar(it, duration = SnackbarDuration.Long)
+            updateViewModel.processIntent(UpdateIntent.DismissError)
+        }
+    }
+
+    // Dialog de actualización disponible
+    val update = updateState.updateAvailable
+    if (update != null) {
+        UpdateAvailableDialog(
+            currentVersion = update.currentVersion,
+            newVersion = update.newVersion,
+            releaseNotes = update.releaseNotes,
+            apkSizeMb = update.apkSizeBytes / 1_048_576f,
+            onConfirm = { updateViewModel.processIntent(UpdateIntent.DownloadAndInstall) },
+            onDismiss = { updateViewModel.processIntent(UpdateIntent.DismissUpdateDialog) }
+        )
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Configuración — API Keys") },
+                title = { Text("Configuración") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -37,7 +69,21 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text("Insertar API Keys", style = MaterialTheme.typography.titleLarge)
+
+            // ── Sección: Actualización OTA ──────────────────────────────────
+            UpdateSection(
+                isChecking = updateState.isChecking,
+                isDownloading = updateState.isDownloading,
+                downloadProgress = updateState.downloadProgress,
+                isUpToDate = updateState.isUpToDate,
+                installReady = updateState.installReady,
+                onCheckForUpdate = { updateViewModel.processIntent(UpdateIntent.CheckForUpdate) }
+            )
+
+            HorizontalDivider()
+
+            // ── Sección: API Keys ───────────────────────────────────────────
+            Text("API Keys", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Las claves se cifran con AES-256-GCM en el hardware TEE del dispositivo.",
                 style = MaterialTheme.typography.bodySmall,
@@ -55,6 +101,145 @@ fun SettingsScreen(
         }
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Sección OTA
+// ───────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun UpdateSection(
+    isChecking: Boolean,
+    isDownloading: Boolean,
+    downloadProgress: Int,
+    isUpToDate: Boolean,
+    installReady: Boolean,
+    onCheckForUpdate: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (installReady) Icons.Default.CheckCircle
+                                      else Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = if (installReady) MaterialTheme.colorScheme.primary
+                               else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text("Actualización de la app", style = MaterialTheme.typography.titleSmall)
+                }
+                if (!isChecking && !isDownloading) {
+                    IconButton(onClick = onCheckForUpdate) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Verificar actualización")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            AnimatedContent(
+                targetState = when {
+                    installReady   -> UpdateUiPhase.INSTALL_READY
+                    isDownloading  -> UpdateUiPhase.DOWNLOADING
+                    isChecking     -> UpdateUiPhase.CHECKING
+                    isUpToDate     -> UpdateUiPhase.UP_TO_DATE
+                    else           -> UpdateUiPhase.IDLE
+                },
+                label = "update_phase"
+            ) { phase ->
+                when (phase) {
+                    UpdateUiPhase.IDLE -> Text(
+                        "Tocá el ícono para verificar si hay una versión nueva.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    UpdateUiPhase.CHECKING -> Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("Verificando versión...", style = MaterialTheme.typography.bodySmall)
+                    }
+                    UpdateUiPhase.DOWNLOADING -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "Descargando... $downloadProgress%",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        LinearProgressIndicator(
+                            progress = { downloadProgress / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    UpdateUiPhase.UP_TO_DATE -> Text(
+                        "✓ Ya tenés la versión más reciente.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    UpdateUiPhase.INSTALL_READY -> Text(
+                        "✓ Descarga completa. El instalador del sistema se abrió automáticamente.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+    }
+}
+
+private enum class UpdateUiPhase { IDLE, CHECKING, DOWNLOADING, UP_TO_DATE, INSTALL_READY }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Dialog de confirmación
+// ───────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun UpdateAvailableDialog(
+    currentVersion: Int,
+    newVersion: Int,
+    releaseNotes: String,
+    apkSizeMb: Float,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.SystemUpdate, contentDescription = null) },
+        title = { Text("Nueva versión disponible") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("v$currentVersion  →  v$newVersion   (${String.format("%.1f", apkSizeMb)} MB)")
+                if (releaseNotes.isNotBlank()) {
+                    HorizontalDivider()
+                    Text(
+                        releaseNotes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) { Text("Descargar e instalar") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Ahora no") }
+        }
+    )
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// ApiKeyField (sin cambios)
+// ───────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun ApiKeyField(
@@ -102,7 +287,13 @@ private fun ApiKeyField(
                         }
                     }
                     TextButton(
-                        onClick = { if (keyInput.isNotBlank()) { onSave(keyInput); keyInput = ""; expanded = false } },
+                        onClick = {
+                            if (keyInput.isNotBlank()) {
+                                onSave(keyInput)
+                                keyInput = ""
+                                expanded = false
+                            }
+                        },
                         enabled = keyInput.isNotBlank()
                     ) {
                         Text("Guardar")

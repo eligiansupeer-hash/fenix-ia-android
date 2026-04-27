@@ -4,10 +4,6 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.Data
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import androidx.work.workDataOf
 import com.fenix.ia.domain.model.Chat
 import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.repository.ChatRepository
@@ -109,35 +105,29 @@ class ProjectDetailViewModel @Inject constructor(
             _uiState.update { it.copy(isIngesting = true) }
 
             try {
-                // Resuelve metadata del archivo desde el URI
-                val (fileName, mimeType, realPath) = resolveUri(uri)
+                // Resuelve metadata del URI (nombre + MIME) sin copiar el archivo a rutas absolutas
+                val (fileName, mimeType) = resolveUriMetadata(uri)
 
-                // Inserta el nodo en Room primero (aparece inmediatamente en la UI)
+                // Persiste el Content URI como string — WorkManager accede via contentResolver
                 val docId = UUID.randomUUID().toString()
                 val doc = DocumentNode(
                     id = docId,
                     projectId = projectId,
                     name = fileName,
-                    absolutePath = realPath,
+                    uri = uri.toString(),           // Content URI — nunca ruta absoluta
                     mimeType = mimeType,
+                    sizeBytes = resolveUriSize(uri),
                     semanticSummary = "Procesando...",
                     createdAt = System.currentTimeMillis()
                 )
                 documentRepository.insertDocument(doc)
 
-                // Dispara WorkManager para la ingesta vectorial en background
-                val workData = workDataOf(
-                    DocumentIngestionWorker.KEY_DOCUMENT_ID to docId,
-                    DocumentIngestionWorker.KEY_FILE_PATH to realPath,
-                    DocumentIngestionWorker.KEY_MIME_TYPE to mimeType,
-                    DocumentIngestionWorker.KEY_PROJECT_ID to projectId.hashCode().toLong()
+                // Usa buildRequest() del companion object — encapsula la WorkData correctamente
+                val request = DocumentIngestionWorker.buildRequest(
+                    documentId = docId,
+                    projectId = projectId.hashCode().toLong()
                 )
-
-                val request = OneTimeWorkRequestBuilder<DocumentIngestionWorker>()
-                    .setInputData(workData)
-                    .build()
-
-                WorkManager.getInstance(context).enqueue(request)
+                androidx.work.WorkManager.getInstance(context).enqueue(request)
 
             } catch (e: Exception) {
                 _effects.send(ProjectDetailEffect.ShowError("Error cargando documento: ${e.message}"))
@@ -164,31 +154,42 @@ class ProjectDetailViewModel @Inject constructor(
     }
 
     /**
-     * Resuelve un content URI a (nombre, mimeType, rutaReal).
-     * Para URIs de MediaStore/Picker copia el archivo a filesDir del app.
+     * Resuelve nombre de archivo y MIME type desde un Content URI.
+     * No copia el archivo — WorkManager accede al URI via contentResolver directamente.
      */
-    private fun resolveUri(uri: Uri): Triple<String, String, String> {
+    private fun resolveUriMetadata(uri: Uri): Pair<String, String> {
         val contentResolver = context.contentResolver
         val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
 
-        // Obtiene nombre del archivo
         var fileName = "documento_${System.currentTimeMillis()}"
-        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) fileName = cursor.getString(idx)
-                }
+        contentResolver.query(
+            uri,
+            arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) fileName = cursor.getString(idx)
             }
-
-        // Copia el archivo al directorio interno del app para que WorkManager pueda accederlo
-        val destDir = java.io.File(context.filesDir, "projects/${_uiState.value.projectId}/docs").also { it.mkdirs() }
-        val destFile = java.io.File(destDir, fileName)
-
-        contentResolver.openInputStream(uri)?.use { input ->
-            destFile.outputStream().use { output -> input.copyTo(output) }
         }
 
-        return Triple(fileName, mimeType, destFile.absolutePath)
+        return Pair(fileName, mimeType)
+    }
+
+    /**
+     * Obtiene el tamaño del archivo en bytes desde el URI sin leerlo completo.
+     * Retorna 0 si no se puede determinar (URI de Drive, etc.)
+     */
+    private fun resolveUriSize(uri: Uri): Long {
+        return context.contentResolver.query(
+            uri,
+            arrayOf(android.provider.OpenableColumns.SIZE),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (idx >= 0) cursor.getLong(idx) else 0L
+            } else 0L
+        } ?: 0L
     }
 }

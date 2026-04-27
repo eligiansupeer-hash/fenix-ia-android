@@ -1,4 +1,4 @@
-name: CI — Verificación previa al rebuild
+name: CI — Build, Test y Release OTA
 
 on:
   push:
@@ -9,20 +9,19 @@ on:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ESTRUCTURA:
-#   Job 1 — compile     → compileDebugKotlin  (rápido, detecta errores de tipos)
+#   Job 1 — compile     → compileDebugKotlin
 #   Job 2 — unit-tests  → testDebugUnitTest   (solo si compile pasa)
 #   Job 3 — build-apk   → assembleDebug       (solo si tests pasan)
+#   Job 4 — release     → GitHub Release + APK asset para OTA  (solo en push a main)
 #
-# NOTA: el repo no tiene gradle-wrapper.jar (binario, no se puede commitear
-# por API de texto). Por eso cada job instala Gradle 8.9 con
-# gradle/actions/setup-gradle y llama `gradle` directo (sin ./gradlew).
+# El job 4 publica un Release con tag "v{versionCode}" extraído de build.gradle.kts.
+# UpdateChecker.kt consulta la GitHub Releases API para detectar actualizaciones.
 # ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
   # JOB 1: Compilación Kotlin
-  # Detecta: errores de tipos, imports rotos, funciones no resueltas, etc.
   # ──────────────────────────────────────────────────────────────────────────
   compile:
     name: "🔨 Compilar Kotlin"
@@ -46,13 +45,13 @@ jobs:
       - name: Compilar (compileDebugKotlin)
         run: gradle compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
 
-      - name: Verificar API keys hardcodeadas (seguridad AGENTS.md)
+      - name: Verificar API keys hardcodeadas (AGENTS.md)
         if: success()
         run: |
           if grep -r --include="*.kt" \
             -E "AIza[A-Za-z0-9_-]{35}|sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}" \
             app/src/main/; then
-            echo "::error::⛔ API key en texto plano detectada en el código fuente"
+            echo "::error::⛔ API key en texto plano detectada"
             exit 1
           fi
           echo "✅ Sin API keys hardcodeadas"
@@ -64,17 +63,14 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           grep -E "^e: |error:" /tmp/compile.log | head -60 >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "> Los archivos marcados con \`e:\` tienen el número de línea exacto." >> $GITHUB_STEP_SUMMARY
 
       - name: Resumen — compilación OK
         if: success()
         run: |
           echo "### ✅ Compilación Kotlin exitosa" >> $GITHUB_STEP_SUMMARY
-          echo "- Sin errores de tipo ni imports rotos" >> $GITHUB_STEP_SUMMARY
-          echo "- Sin API keys hardcodeadas" >> $GITHUB_STEP_SUMMARY
 
   # ──────────────────────────────────────────────────────────────────────────
-  # JOB 2: Tests unitarios JVM (JUnit5 + MockK, sin emulador)
+  # JOB 2: Tests unitarios JVM
   # ──────────────────────────────────────────────────────────────────────────
   unit-tests:
     name: "🧪 Tests Unitarios (JVM)"
@@ -96,40 +92,22 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Correr tests JVM (testDebugUnitTest)
+      - name: Correr tests JVM
         run: gradle testDebugUnitTest --no-daemon --continue
-        # --continue: corre todos los tests aunque alguno falle,
-        # así el reporte muestra todos los errores de una vez
 
       - name: Resumen de resultados
         if: always()
         run: |
           echo "### 🧪 Resultados de Tests Unitarios" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           if ls app/build/test-results/testDebugUnitTest/*.xml 1>/dev/null 2>&1; then
             TOTAL=$(grep -h 'tests=' app/build/test-results/testDebugUnitTest/*.xml \
               | grep -oP 'tests="\K[0-9]+' | awk '{s+=$1} END {print s+0}')
             FAILED=$(grep -h 'failures=' app/build/test-results/testDebugUnitTest/*.xml \
               | grep -oP 'failures="\K[0-9]+' | awk '{s+=$1} END {print s+0}')
-            ERRORS=$(grep -h 'errors=' app/build/test-results/testDebugUnitTest/*.xml \
-              | grep -oP 'errors="\K[0-9]+' | awk '{s+=$1} END {print s+0}')
-            SKIPPED=$(grep -h 'skipped=' app/build/test-results/testDebugUnitTest/*.xml \
-              | grep -oP 'skipped="\K[0-9]+' | awk '{s+=$1} END {print s+0}')
-            PASSED=$(( TOTAL - FAILED - ERRORS - SKIPPED ))
-            echo "| ✅ Pasaron | ❌ Fallaron | 💥 Errores | ⏭️ Saltados |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------------|-----------|------------|" >> $GITHUB_STEP_SUMMARY
-            echo "| $PASSED | $FAILED | $ERRORS | $SKIPPED |" >> $GITHUB_STEP_SUMMARY
-            if [ "$FAILED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**Tests fallidos:**" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              grep -rh '<testcase' app/build/test-results/testDebugUnitTest/*.xml \
-                | grep -E 'failure|error' \
-                | grep -oP 'name="\K[^"]+' | head -20 >> $GITHUB_STEP_SUMMARY || true
-              echo '```' >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "⚠️ No se generaron XMLs de resultados — puede ser un error de configuración." >> $GITHUB_STEP_SUMMARY
+            PASSED=$(( TOTAL - FAILED ))
+            echo "| ✅ Pasaron | ❌ Fallaron |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------------|" >> $GITHUB_STEP_SUMMARY
+            echo "| $PASSED | $FAILED |" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Subir reporte HTML
@@ -142,9 +120,7 @@ jobs:
           if-no-files-found: warn
 
   # ──────────────────────────────────────────────────────────────────────────
-  # JOB 3: Build APK Debug completo
-  # Solo corre si compilación + tests pasaron.
-  # APK descargable desde la pestaña Artifacts de GitHub Actions.
+  # JOB 3: Build APK Debug
   # ──────────────────────────────────────────────────────────────────────────
   build-apk:
     name: "📦 Build APK Debug"
@@ -166,29 +142,113 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK Debug (assembleDebug)
+      - name: Build APK Debug
         run: gradle assembleDebug --no-daemon
 
-      - name: Subir APK
+      - name: Subir APK como artifact (backup)
         uses: actions/upload-artifact@v4
         with:
           name: "fenix-ia-debug-${{ github.sha }}"
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
 
+      # Guarda el APK para que el job de release lo descargue
+      - name: Guardar APK para release
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-for-release
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 4: Publicar GitHub Release con APK como asset
+  # Solo en push a main (no en PRs). Así UpdateChecker puede descargarlo.
+  #
+  # Tag format: "v{versionCode}" extraído del build.gradle.kts
+  # Si el tag ya existe (mismo versionCode, segundo push del día), se sobreescribe.
+  # ──────────────────────────────────────────────────────────────────────────
+  release:
+    name: "🚀 Publicar Release OTA"
+    runs-on: ubuntu-latest
+    needs: build-apk
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write   # necesario para crear releases y tags
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extraer versionCode de build.gradle.kts
+        id: version
+        run: |
+          VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -1)
+          VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          if [ -z "$VERSION_CODE" ]; then
+            echo "::error::No se pudo extraer versionCode de build.gradle.kts"
+            exit 1
+          fi
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "✅ versionCode=$VERSION_CODE, versionName=$VERSION_NAME, tag=v$VERSION_CODE"
+
+      - name: Descargar APK del job anterior
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-for-release
+          path: ./apk-output/
+
+      - name: Renombrar APK con versión
+        run: |
+          mv ./apk-output/app-debug.apk ./apk-output/fenix-ia-v${{ steps.version.outputs.version_code }}.apk
+
+      - name: Eliminar release anterior con mismo tag (si existe)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          # Intenta borrar el release existente — falla silenciosamente si no existe
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push --delete origin "$TAG" 2>/dev/null || true
+
+      - name: Crear GitHub Release con APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
+          VERSION_NAME="${{ steps.version.outputs.version_name }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -5)
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+
+          gh release create "$TAG" \
+            ./apk-output/fenix-ia-v${VERSION_CODE}.apk \
+            --title "Fenix IA v${VERSION_NAME} (build ${VERSION_CODE})" \
+            --notes "## Fenix IA v${VERSION_NAME}
+          
+          **Build:** \`${VERSION_CODE}\` | **Commit:** \`${SHORT_SHA}\`
+          
+          ### Cambios
+          ${COMMIT_MSG}
+          
+          ### Instalar
+          Desde la app: Configuración → Actualización → Verificar nueva versión
+          
+          Manual vía ADB:
+          \`\`\`
+          adb install -r fenix-ia-v${VERSION_CODE}.apk
+          \`\`\`" \
+            --latest
+
       - name: Resumen final
         run: |
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-          SIZE=$(du -sh "$APK" | cut -f1)
-          SHORT="${{ github.sha }}"
-          SHORT="${SHORT:0:7}"
-          echo "### ✅ APK listo para instalar" >> $GITHUB_STEP_SUMMARY
+          TAG="${{ steps.version.outputs.tag }}"
+          echo "### 🚀 Release publicado" >> $GITHUB_STEP_SUMMARY
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tamaño | $SIZE |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit | \`$SHORT\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`$TAG\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://github.com/eligiansupeer-hash/fenix-ia-android/releases/tag/$TAG |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Descargá el APK desde **Artifacts** e instalalo con:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo 'adb install -r app-debug.apk' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "UpdateChecker detectará esta versión en el próximo check desde la app." >> $GITHUB_STEP_SUMMARY

@@ -91,7 +91,6 @@ push a main
 ### ⏳ Pendiente:
 | Tarea | Prioridad |
 |-------|-----------|
-| Verificar que el CI Job 4 crea el Release correctamente | 🔴 INMEDIATA |
 | Instalar APK en Xiaomi (bajar de GitHub Releases) y probar OTA | 🔴 INMEDIATA |
 | Tests instrumentados E2E y RAM stress en dispositivo | 🟡 |
 | Modelo TFLite MiniLM para RAG semántico real | 🟡 |
@@ -100,34 +99,19 @@ push a main
 
 ## PRÓXIMA SESIÓN — qué hacer exactamente
 
-### PASO 1 — Verificar que el CI publicó el Release
-Ir a: https://github.com/eligiansupeer-hash/fenix-ia-android/releases
-Debe aparecer un release `v{versionCode}` con el APK adjunto.
+### PASO 1 — Instalar la primera versión en el Xiaomi
+Cuando el CI termine, bajar el APK directo desde el navegador del Xiaomi:
+https://github.com/eligiansupeer-hash/fenix-ia-android/releases/latest
 
-Si el Job 4 falla por permisos:
-```
-Settings → Actions → General → Workflow permissions
-→ seleccionar "Read and write permissions" → Save
-```
+Tocar el archivo `.apk` → instalar (activar "fuentes desconocidas" si pide).
 
-### PASO 2 — Instalar la primera versión (sin OTA aún)
-Bajar el APK del release de GitHub directamente al Xiaomi vía navegador,
-o via ADB desde la netbook (una sola vez):
-```powershell
-git pull origin main
-.\gradlew.bat assembleDebug
-adb install -r app\build\outputs\apk\debug\app-debug.apk
-```
+### PASO 2 — Probar el flujo OTA completo
+1. Incrementar `versionCode` en `app/build.gradle.kts` (de 1 a 2)
+2. Commit + push → CI publica release v2
+3. En el Xiaomi: Configuración → "Verificar nueva versión"
+4. Dialog "v1 → v2" → "Descargar e instalar" → listo
 
-### PASO 3 — Probar el flujo OTA completo
-1. Incrementar `versionCode` en `app/build.gradle.kts` (ej: de 1 a 2)
-2. Hacer commit y push a main
-3. Esperar que el CI termine (~10 min en GitHub)
-4. En el Xiaomi: Configuración → "Verificar nueva versión"
-5. Debe aparecer el dialog con "v1 → v2"
-6. Tocar "Descargar e instalar" → la app se actualiza sola
-
-### PASO 4 — Probar flujo de chat con API key real
+### PASO 3 — Probar flujo de chat con API key real
 1. Configuración → Groq API key (gratis: console.groq.com)
 2. Crear proyecto → nuevo chat → enviar mensaje
 3. Verificar streaming → respuesta → botones Copiar y Regenerar
@@ -147,3 +131,4 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 - `22f27c8` — feat(ota): AndroidManifest — REQUEST_INSTALL_PACKAGES + FileProvider
 - `b46d2c0` — feat(ota): file_provider_paths.xml
 - `3d51925` — feat(ota): CI Job 4 — publica GitHub Release con APK
+- `cecc25c` — chore: SESSION_STATE sesión 6

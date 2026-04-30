@@ -31,8 +31,8 @@ data class ToolsUiState(
 class ToolsViewModel @Inject constructor(
     private val toolRepo: ToolRepository,
     private val executor: ToolExecutor,
-    private val orchestrator: OrchestratorEngine,
-    private val policy: PolicyEngine
+    private val orchestrator: OrchestratorEngine
+    // PolicyEngine es un object de Kotlin — se accede directamente, sin inyección
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ToolsUiState())
@@ -86,9 +86,10 @@ class ToolsViewModel @Inject constructor(
                     .trim()
                     .ifBlank { rawOutput.trim() }
 
-                // PolicyEngine audita ANTES de persistir (R-05)
-                val policyResult = policy.audit(js)
-                if (!policyResult.isAllowed) {
+                // PolicyEngine.evaluate() audita ANTES de persistir (R-05)
+                // PolicyEngine es un object — se llama directamente sin instancia inyectada
+                val policyResult = PolicyEngine.evaluate(js)
+                if (!policyResult.allowed) {
                     _uiState.update {
                         it.copy(
                             isCreating = false,
@@ -120,6 +121,7 @@ class ToolsViewModel @Inject constructor(
                     )
                 )
                 _uiState.update { it.copy(isCreating = false) }
+
             } catch (e: Exception) {
                 _uiState.update { it.copy(isCreating = false, error = e.message) }
             }

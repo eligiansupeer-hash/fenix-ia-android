@@ -13,12 +13,28 @@ sealed class ChatIntent {
     object DismissError : ChatIntent()
 }
 
+/**
+ * Modo de inyección de contexto documental al LLM.
+ * Se muestra en la UI para que el usuario sepa cómo se están leyendo sus documentos.
+ */
+enum class ContextMode {
+    /** Sin documentos seleccionados — solo conversación. */
+    NONE,
+    /** Texto completo de todos los documentos seleccionados — el LLM los lee enteros. */
+    FULL,
+    /** RAG semántico — los documentos son muy largos, se inyectan solo los fragmentos relevantes. */
+    RAG
+}
+
 data class ChatUiState(
     val messages: List<Message> = emptyList(),
     val documents: List<DocumentNode> = emptyList(),
     val isStreaming: Boolean = false,
     val streamingBuffer: String = "",
     val activeProvider: ApiProvider? = null,
+    val contextMode: ContextMode = ContextMode.NONE,
+    val contextDocumentCount: Int = 0,      // Cuántos documentos están siendo leídos
+    val contextTokenCount: Int = 0,         // Tokens totales del contexto (estimado)
     val error: String? = null,
     val isLoading: Boolean = false
 )

@@ -9,9 +9,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
@@ -32,6 +34,8 @@ fun ProjectDetailScreen(
     onNavigateToChat: (chatId: String) -> Unit,
     onNavigateToWorkflow: () -> Unit = {},
     onNavigateToResearch: () -> Unit = {},
+    onNavigateToTools: () -> Unit = {},
+    onNavigateToArtifacts: () -> Unit = {},
     onBack: () -> Unit,
     viewModel: ProjectDetailViewModel = hiltViewModel()
 ) {
@@ -68,20 +72,6 @@ fun ProjectDetailScreen(
                     }
                 },
                 actions = {
-                    // Botón ⚡ Agentes → WorkflowScreen (Fase 3)
-                    IconButton(onClick = onNavigateToWorkflow) {
-                        Icon(
-                            imageVector        = Icons.Default.FlashOn,
-                            contentDescription = "Agentes autónomos"
-                        )
-                    }
-                    // Botón 🔍 Deep Research → ResearchScreen (Fase 4)
-                    IconButton(onClick = onNavigateToResearch) {
-                        Icon(
-                            imageVector        = Icons.Default.Search,
-                            contentDescription = "Deep Research"
-                        )
-                    }
                     // Botón cargar documentos
                     IconButton(onClick = {
                         filePicker.launch(arrayOf(
@@ -99,12 +89,31 @@ fun ProjectDetailScreen(
                 }
             )
         },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = { viewModel.processIntent(ProjectDetailIntent.CreateChat) }
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Nuevo chat")
-            }
+        // ── BottomAppBar con 4 navegaciones + FAB (Fase 6 — NODO-E1) ──────────
+        bottomBar = {
+            BottomAppBar(
+                actions = {
+                    IconButton(onClick = onNavigateToWorkflow) {
+                        Icon(Icons.Default.FlashOn, contentDescription = "Agentes autónomos")
+                    }
+                    IconButton(onClick = onNavigateToResearch) {
+                        Icon(Icons.Default.Search, contentDescription = "Deep Research")
+                    }
+                    IconButton(onClick = onNavigateToTools) {
+                        Icon(Icons.Default.Build, contentDescription = "Herramientas")
+                    }
+                    IconButton(onClick = onNavigateToArtifacts) {
+                        Icon(Icons.Default.Folder, contentDescription = "Artefactos")
+                    }
+                },
+                floatingActionButton = {
+                    FloatingActionButton(
+                        onClick = { viewModel.processIntent(ProjectDetailIntent.CreateChat) }
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Nuevo chat")
+                    }
+                }
+            )
         }
     ) { padding ->
         LazyColumn(

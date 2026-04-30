@@ -127,7 +127,10 @@ dependencies {
     // ── Web scraping / Deep Research ─────────────────────────────────────────
     // WebResearcher usa stdlib Kotlin para parsing HTML (sin dependencias externas).
     // Ksoup eliminado para evitar conflictos de classpath con Ktor.
-    // Si se necesita parsing DOM avanzado en el futuro, agregar Jsoup Android.
+
+    // ── IA Local On-Device (Fase 5) ───────────────────────────────────────────
+    // MediaPipe LLM Inference — Llama 3.2 1B Q4, solo activado en >= 4GB RAM
+    implementation(libs.mediapipe.genai)
 
     // ── Tests ─────────────────────────────────────────────────────────────────
     testImplementation(libs.junit5)

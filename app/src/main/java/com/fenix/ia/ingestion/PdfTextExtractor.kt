@@ -5,67 +5,114 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.util.Log
 import androidx.core.net.toUri
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.fenix.ia.domain.model.DocumentNode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 /**
- * Extrae texto de documentos PDF.
+ * Extrae texto completo de documentos PDF usando una estrategia de dos fases:
  *
- * Estrategia en dos fases:
- *   1. Intenta extraer texto nativo del PDF via PdfRenderer + heurística de pixels
- *      (funciona solo en PDFs con texto renderizable — mayoría de PDFs digitales).
- *   2. Si el resultado está vacío, retorna string vacío para que el Worker marque
- *      el documento como indexado igualmente (sin chunks inútiles en ObjectBox).
+ * FASE 1 — Texto nativo con PdfBox Android:
+ *   Lee el stream del PDF y extrae el texto embebido directamente.
+ *   Funciona para PDFs generados digitalmente (Word, LibreOffice, LaTeX, etc).
+ *   Sin renderizado de bitmaps — cumple R-04 y R-06.
  *
- * NOTA: Android PdfRenderer NO tiene API de extracción de texto (solo renderizado visual).
- * Para OCR real en producción, integrar ML Kit Text Recognition:
- *   implementation("com.google.mlkit:text-recognition:16.0.0")
+ * FASE 2 — OCR con ML Kit (solo si fase 1 retorna texto insuficiente):
+ *   Renderiza cada página como bitmap y aplica ML Kit Text Recognition.
+ *   Funciona para PDFs escaneados (fotos de documentos físicos).
+ *   bitmap.recycle() garantizado en bloque finally — cumple R-06.
  *
- * RESTRICCIÓN R-04: NUNCA carga el PDF completo en heap — procesa página a página.
- * RESTRICCIÓN R-06: bitmap.recycle() OBLIGATORIO en bloque finally.
+ * El texto resultante es el contenido COMPLETO del documento, listo para
+ * ser chunkeado e indexado en ObjectBox por RagEngine.
  */
 class PdfTextExtractor(private val context: Context) {
 
     companion object {
         private const val TAG = "PdfTextExtractor"
-        private const val MAX_PAGES = 50           // Límite anti-OOM para PDFs muy largos
-        private const val TARGET_WIDTH = 720        // ~1MB por página en RGB_565
-        private const val MAX_CHARS_PER_PAGE = 4_000
+        private const val MAX_PAGES_OCR = 30       // Límite anti-OOM para OCR en dispositivos 2GB
+        private const val TARGET_WIDTH_OCR = 1080  // Resolución óptima para ML Kit
+        private const val MIN_TEXT_LENGTH = 50     // Mínimo de chars para considerar fase 1 exitosa
     }
 
-    /**
-     * Extrae texto página a página del PDF referenciado por [document].
-     *
-     * Retorna el texto extraído o string vacío si el PDF no tiene texto extraíble.
-     * El Worker llamará markAsIndexed() en ambos casos — el documento nunca quedará
-     * en estado "Procesando..." de forma permanente.
-     */
+    init {
+        // PdfBox requiere inicialización de recursos una sola vez por contexto
+        PDFBoxResourceLoader.init(context)
+    }
+
     suspend fun extractText(document: DocumentNode): String = withContext(Dispatchers.IO) {
+        // ── FASE 1: Texto nativo via PdfBox ──────────────────────────────────
+        val nativeText = tryExtractNativeText(document)
+
+        if (nativeText.length >= MIN_TEXT_LENGTH) {
+            Log.d(TAG, "'${document.name}': ${nativeText.length} chars extraídos (texto nativo)")
+            return@withContext nativeText
+        }
+
+        // ── FASE 2: OCR via ML Kit ────────────────────────────────────────────
+        // Solo llegamos aquí si el PDF es escaneado (sin texto embebido suficiente)
+        Log.d(TAG, "'${document.name}': texto nativo vacío o insuficiente, iniciando OCR...")
+        val ocrText = tryExtractOcrText(document)
+
+        Log.d(TAG, "'${document.name}': ${ocrText.length} chars extraídos (OCR)")
+        ocrText
+    }
+
+    // ── Fase 1: PdfBox — extracción de texto nativo ──────────────────────────
+
+    private fun tryExtractNativeText(document: DocumentNode): String {
+        return try {
+            val uri = document.uri.toUri()
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                PDDocument.load(inputStream).use { pdDocument ->
+                    if (pdDocument.isEncrypted) {
+                        Log.w(TAG, "'${document.name}': PDF encriptado, saltando fase 1")
+                        return ""
+                    }
+                    val stripper = PDFTextStripper().apply {
+                        sortByPosition = true
+                        startPage = 1
+                        endPage = pdDocument.numberOfPages
+                    }
+                    stripper.getText(pdDocument).trim()
+                }
+            } ?: ""
+        } catch (e: Exception) {
+            Log.w(TAG, "'${document.name}': PdfBox falló: ${e.message}")
+            ""
+        }
+    }
+
+    // ── Fase 2: ML Kit — OCR para PDFs escaneados ────────────────────────────
+
+    private suspend fun tryExtractOcrText(document: DocumentNode): String {
         val uri = document.uri.toUri()
         val sb = StringBuilder()
 
         try {
             context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                 PdfRenderer(pfd).use { renderer ->
-                    val pageCount = minOf(renderer.pageCount, MAX_PAGES)
-                    Log.d(TAG, "Procesando PDF '${document.name}': $pageCount páginas")
+                    val pageCount = minOf(renderer.pageCount, MAX_PAGES_OCR)
 
                     for (pageIndex in 0 until pageCount) {
                         renderer.openPage(pageIndex).use { page ->
-                            val bitmap = renderPageSafe(page)
+                            val bitmap = renderPageForOcr(page)
                             try {
-                                // Intentamos extraer información estructural de la página.
-                                // PdfRenderer nativo no tiene API de texto — esto es un placeholder
-                                // que devuelve vacío si no hay forma de extraer texto real.
-                                // En producción: reemplazar con ML Kit Text Recognition.
-                                val pageText = extractTextFromPage(bitmap, pageIndex + 1)
+                                val pageText = recognizeTextWithMlKit(bitmap)
                                 if (pageText.isNotBlank()) {
+                                    sb.append("--- Página ${pageIndex + 1} ---\n")
                                     sb.append(pageText)
-                                    sb.append("\n")
+                                    sb.append("\n\n")
                                 }
                             } finally {
-                                // R-06: recycle SIEMPRE en finally para evitar memory jitter
+                                // R-06: recycle SIEMPRE en finally
                                 bitmap.recycle()
                             }
                         }
@@ -73,50 +120,39 @@ class PdfTextExtractor(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error procesando PDF '${document.name}'", e)
-            // No relanzamos — el Worker manejará el string vacío marcando isIndexed=true
+            Log.e(TAG, "'${document.name}': OCR falló: ${e.message}")
         }
 
-        // Si no se extrajo texto (PDF escaneado sin OCR), retornamos vacío.
-        // El Worker marcará el documento como indexado igualmente.
-        // El usuario verá el documento en la lista sin el spinner de "Procesando".
-        sb.toString()
+        return sb.toString()
     }
 
     /**
-     * Renderiza una página PDF usando dimensiones reducidas para no superar ~1MB de bitmap.
-     * Samsung A10 (2 GB): RGB_565 a 720px de ancho es suficiente para OCR básico.
+     * Renderiza la página a 1080px de ancho para ML Kit.
+     * ARGB_8888 requerido (ML Kit no acepta RGB_565).
+     * R-04: una sola página en memoria a la vez.
      */
-    private fun renderPageSafe(page: PdfRenderer.Page): Bitmap {
-        val targetWidth = TARGET_WIDTH
+    private fun renderPageForOcr(page: PdfRenderer.Page): Bitmap {
+        val targetWidth = TARGET_WIDTH_OCR
         val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
         val targetHeight = (page.height * scale).toInt().coerceAtLeast(1)
-
-        val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+        val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         return bitmap
     }
 
     /**
-     * Placeholder para extracción de texto desde bitmap de página PDF.
-     *
-     * Android PdfRenderer NO expone el texto del PDF directamente.
-     * Para extraer texto real se necesita ML Kit o una librería como iText/PDFBox
-     * que trabaje sobre el stream del PDF (no sobre el bitmap renderizado).
-     *
-     * Retorna vacío para no almacenar datos inútiles en ObjectBox.
-     * El documento igual quedará marcado como indexado.
-     *
-     * TODO producción: reemplazar con ML Kit Text Recognition:
-     * ```kotlin
-     * val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-     * val image = InputImage.fromBitmap(bitmap, 0)
-     * return recognizer.process(image).await().text.take(MAX_CHARS_PER_PAGE)
-     * ```
+     * Reconoce texto en un bitmap usando ML Kit Text Recognition.
+     * Suspende la coroutine hasta que ML Kit resuelve el callback.
      */
-    private fun extractTextFromPage(bitmap: Bitmap, pageNumber: Int): String {
-        // No retornamos placeholder con texto falso — retornamos vacío.
-        // Esto evita que ObjectBox almacene chunks inútiles que confunden al LLM.
-        return ""
-    }
+    private suspend fun recognizeTextWithMlKit(bitmap: Bitmap): String =
+        suspendCancellableCoroutine { continuation ->
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val image = InputImage.fromBitmap(bitmap, 0)
+            recognizer.process(image)
+                .addOnSuccessListener { result -> continuation.resume(result.text) }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "ML Kit falló en página: ${e.message}")
+                    continuation.resume("")
+                }
+        }
 }

@@ -33,14 +33,17 @@ object AppModule {
             FenixDatabase::class.java,
             "fenix_ia_db"
         )
+        // v1 → v2: agrega tabla tools. En dev se destruye y recrea.
+        // En producción futura: reemplazar por addMigrations(MIGRATION_1_2).
         .fallbackToDestructiveMigration()
         .build()
     }
 
-    @Provides fun provideProjectDao(db: FenixDatabase) = db.projectDao()
-    @Provides fun provideChatDao(db: FenixDatabase) = db.chatDao()
-    @Provides fun provideMessageDao(db: FenixDatabase) = db.messageDao()
+    @Provides fun provideProjectDao(db: FenixDatabase)  = db.projectDao()
+    @Provides fun provideChatDao(db: FenixDatabase)     = db.chatDao()
+    @Provides fun provideMessageDao(db: FenixDatabase)  = db.messageDao()
     @Provides fun provideDocumentDao(db: FenixDatabase) = db.documentDao()
+    @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()   // ← NODO-A1
 
     // ── ObjectBox ─────────────────────────────────────────────────────────────
     @Provides

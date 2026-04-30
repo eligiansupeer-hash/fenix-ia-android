@@ -43,6 +43,8 @@ android {
             excludes += "/META-INF/NOTICE"
             excludes += "/META-INF/NOTICE.txt"
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            // PdfBox Android
+            excludes += "META-INF/DEPENDENCIES"
         }
     }
     testOptions {
@@ -52,19 +54,12 @@ android {
     }
 }
 
-// ── ObjectBox + KAPT nota ─────────────────────────────────────────────────────
-// ObjectBox 4.0 NO soporta KSP — usa kapt internamente via su plugin.
-// Fix: en DocumentChunk.kt se omitió distanceType en @HnswIndex para evitar
-// que KAPT falle resolviendo VectorDistanceType.COSINE en Kotlin 2.0+.
-// ─────────────────────────────────────────────────────────────────────────────
-
 dependencies {
     // Compose BOM
     val composeBom = platform(libs.compose.bom)
     implementation(composeBom)
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
-    // Material Icons Extended — requerido para Icons.Default.Stop, Delete, etc.
     implementation(libs.compose.material.icons.extended)
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
@@ -83,8 +78,6 @@ dependencies {
 
     // Coroutines
     implementation(libs.coroutines.android)
-    // kotlinx-coroutines-guava: requerido para ListenableFuture.await()
-    // usado en JavaScriptSandbox.createConnectedInstanceAsync().await()
     implementation(libs.coroutines.guava)
 
     // Room
@@ -102,7 +95,7 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.logging)
 
-    // Serializacion Kotlin
+    // Serialización Kotlin
     implementation(libs.kotlinx.serialization.json)
 
     // WorkManager
@@ -117,19 +110,28 @@ dependencies {
     // ObjectBox runtime
     implementation(libs.objectbox.android)
 
-    // Apache POI — extracción de texto DOCX (R-04: excluye xmlbeans pesado)
+    // ── Extracción de texto de documentos ─────────────────────────────────────
+
+    // Apache POI — extracción de texto DOCX/DOC (R-04: excluye xmlbeans pesado)
     implementation(libs.apache.poi.ooxml) {
         exclude(group = "org.apache.xmlbeans")
         exclude(group = "com.github.virtuald")
         exclude(group = "org.apache.logging.log4j")
         exclude(group = "org.apache.commons", module = "commons-compress")
     }
-    // commons-compress necesario para POI pero a versión ligera
     implementation(libs.commons.compress)
 
-    // -----------------------------------------------------------------------
-    // Tests
-    // -----------------------------------------------------------------------
+    // PdfBox Android — extrae texto NATIVO del stream PDF sin renderizar bitmaps.
+    // Funciona en PDFs digitales (generados con Word, LibreOffice, etc).
+    // R-04 compliant: procesa el stream directamente, no carga el PDF en heap de golpe.
+    implementation(libs.pdfbox.android)
+
+    // ML Kit Text Recognition — OCR para PDFs escaneados (imágenes sin texto embebido).
+    // El modelo (~3 MB) se descarga via Play Services en el primer uso.
+    // Fallback: si no hay Play Services, usa el modelo bundled en el APK.
+    implementation(libs.mlkit.text.recognition)
+
+    // ── Tests ──────────────────────────────────────────────────────────────────
     testImplementation(libs.junit5)
     testImplementation(libs.junit4)
     testRuntimeOnly(libs.junit.vintage.engine)

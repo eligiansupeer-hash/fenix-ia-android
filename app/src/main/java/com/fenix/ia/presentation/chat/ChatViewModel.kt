@@ -7,6 +7,7 @@ import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
 import com.fenix.ia.data.remote.StreamEvent
 import com.fenix.ia.data.remote.TaskType
+import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.model.Message
 import com.fenix.ia.domain.model.MessageRole
 import com.fenix.ia.domain.repository.DocumentRepository
@@ -36,6 +37,32 @@ class ChatViewModel @Inject constructor(
     private var currentChatId: String = ""
     private var currentProjectId: String = ""
     private var streamingJob: Job? = null
+
+    companion object {
+        /**
+         * Umbral de tokens para decidir estrategia de contexto:
+         *
+         * <= FULL_CONTEXT_TOKEN_LIMIT → texto completo de todos los docs en el system prompt.
+         *    El LLM ve TODO el contenido. Ideal para docs cortos/medianos.
+         *
+         *  > FULL_CONTEXT_TOKEN_LIMIT → RAG semántico: solo los chunks más relevantes
+         *    para la query actual. Necesario para docs muy largos o muchos docs.
+         *
+         * 60_000 tokens ≈ límite conservador que funciona en Gemini (1M tokens),
+         * Groq (128k), Mistral (128k) y OpenRouter (según modelo).
+         * Para Gemini se puede subir a 500_000 si se detecta ese proveedor.
+         */
+        private const val FULL_CONTEXT_TOKEN_LIMIT = 60_000
+
+        // Cuántos chars equivalen aproximadamente a 1 token (promedio inglés/español)
+        private const val CHARS_PER_TOKEN = 4
+
+        // Cuántos chunks RAG traer cuando el contenido es demasiado largo
+        private const val RAG_CHUNK_LIMIT = 20
+
+        // Máximo de mensajes de historial a incluir en cada request
+        private const val MAX_HISTORY_MESSAGES = 30
+    }
 
     fun loadChat(chatId: String, projectId: String) {
         currentChatId = chatId
@@ -75,31 +102,23 @@ class ChatViewModel @Inject constructor(
             )
             messageRepository.insertMessage(userMessage)
 
-            // Obtiene documentos seleccionados
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
-
-            // Construye contexto real desde ObjectBox (no requiere embeddings)
-            val documentContent = if (checkedDocs.isNotEmpty()) {
-                val nodeIds = checkedDocs.map { it.id }
-                ragEngine.getChunksByDocumentNodeIds(nodeIds)
-            } else emptyMap()
+            val (systemPrompt, estimatedTokens) = buildContextForQuery(content, checkedDocs)
 
             val provider = llmRouter.selectProvider(
-                estimateTokens(content + documentContent.values.joinToString()),
-                detectTaskType(content)
+                estimatedTokens = estimatedTokens,
+                taskType = detectTaskType(content)
             )
 
-            _uiState.update { it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null) }
+            _uiState.update {
+                it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null)
+            }
 
             streamingJob = viewModelScope.launch {
-                val historyForInference = _uiState.value.messages.takeLast(20).map { msg ->
-                    LlmMessage(role = msg.role.name.lowercase(), content = msg.content)
-                }
-                collectInferenceStream(
-                    history = historyForInference,
-                    systemPrompt = buildSystemPrompt(checkedDocs.map { it.name }, documentContent),
-                    provider = provider
-                )
+                val history = _uiState.value.messages
+                    .takeLast(MAX_HISTORY_MESSAGES)
+                    .map { LlmMessage(role = it.role.name.lowercase(), content = it.content) }
+                collectInferenceStream(history, systemPrompt, provider)
             }
         }
     }
@@ -114,30 +133,117 @@ class ChatViewModel @Inject constructor(
             messageRepository.deleteMessage(lastAssistant.id)
 
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
-            val documentContent = if (checkedDocs.isNotEmpty()) {
-                ragEngine.getChunksByDocumentNodeIds(checkedDocs.map { it.id })
-            } else emptyMap()
+            val (systemPrompt, estimatedTokens) = buildContextForQuery(lastUserContent, checkedDocs)
 
             val provider = llmRouter.selectProvider(
-                estimateTokens(lastUserContent + documentContent.values.joinToString()),
-                detectTaskType(lastUserContent)
+                estimatedTokens = estimatedTokens,
+                taskType = detectTaskType(lastUserContent)
             )
 
-            val historyWithoutLastAssistant = messages
+            val history = messages
                 .filter { it.id != lastAssistant.id }
-                .takeLast(20)
+                .takeLast(MAX_HISTORY_MESSAGES)
                 .map { LlmMessage(it.role.name.lowercase(), it.content) }
 
-            _uiState.update { it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null) }
+            _uiState.update {
+                it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null)
+            }
 
             streamingJob = viewModelScope.launch {
-                collectInferenceStream(
-                    history = historyWithoutLastAssistant,
-                    systemPrompt = buildSystemPrompt(checkedDocs.map { it.name }, documentContent),
-                    provider = provider
-                )
+                collectInferenceStream(history, systemPrompt, provider)
             }
         }
+    }
+
+    /**
+     * Construye el contexto documental para la query actual usando la estrategia adecuada:
+     *
+     * Estrategia A — Texto completo (docs cortos/medianos):
+     *   Si el total de tokens de los documentos seleccionados cabe en el context window,
+     *   manda TODO el contenido de TODOS los documentos. El LLM puede responder
+     *   cualquier pregunta sobre cualquier parte del documento.
+     *
+     * Estrategia B — RAG semántico (docs largos):
+     *   Si el total supera el umbral, busca los chunks más relevantes para la query
+     *   actual. El LLM solo ve los fragmentos pertinentes a la pregunta.
+     *
+     * Retorna (systemPrompt, estimatedTokensTotal).
+     */
+    private suspend fun buildContextForQuery(
+        query: String,
+        checkedDocs: List<DocumentNode>
+    ): Pair<String, Int> {
+        if (checkedDocs.isEmpty()) {
+            val prompt = "Eres FENIX IA, un asistente inteligente y preciso."
+            return Pair(prompt, estimateTokens(query))
+        }
+
+        val docIds = checkedDocs.map { it.id }
+
+        // Mide el tamaño total del contenido indexado
+        val totalTokens = ragEngine.estimateTotalTokens(docIds)
+
+        val contextBlock: String
+        val strategyLabel: String
+
+        if (totalTokens <= FULL_CONTEXT_TOKEN_LIMIT) {
+            // ── Estrategia A: texto completo ──────────────────────────────────
+            strategyLabel = "COMPLETO"
+            val fullTexts = ragEngine.getFullTextByDocumentNodeIds(docIds)
+            contextBlock = buildString {
+                fullTexts.entries.forEachIndexed { index, (nodeId, text) ->
+                    val name = checkedDocs.getOrNull(index)?.name ?: nodeId
+                    appendLine("════════════════════════════════")
+                    appendLine("DOCUMENTO: $name")
+                    appendLine("════════════════════════════════")
+                    appendLine(text)
+                    appendLine()
+                }
+            }
+        } else {
+            // ── Estrategia B: RAG semántico ───────────────────────────────────
+            strategyLabel = "RAG"
+            val relevantChunks = ragEngine.searchInDocuments(query, docIds, limit = RAG_CHUNK_LIMIT)
+            contextBlock = if (relevantChunks.isEmpty()) {
+                "(No se encontraron fragmentos relevantes para esta consulta en los documentos seleccionados.)"
+            } else {
+                buildString {
+                    appendLine("Fragmentos relevantes de los documentos (ordenados por relevancia):")
+                    appendLine()
+                    relevantChunks.forEachIndexed { i, chunk ->
+                        val name = checkedDocs.firstOrNull { it.id == chunk.documentNodeId }?.name
+                            ?: chunk.documentNodeId
+                        appendLine("── Fragmento ${i + 1} de «$name» ──")
+                        appendLine(chunk.textPayload)
+                        appendLine()
+                    }
+                }
+            }
+        }
+
+        val systemPrompt = buildString {
+            appendLine("Eres FENIX IA, un asistente inteligente y preciso.")
+            appendLine()
+            appendLine("Tienes acceso al contenido de los siguientes documentos cargados por el usuario:")
+            checkedDocs.forEachIndexed { i, doc ->
+                appendLine("  ${i + 1}. ${doc.name}")
+            }
+            appendLine()
+            appendLine("Modo de contexto: $strategyLabel")
+            if (strategyLabel == "COMPLETO") {
+                appendLine("Tienes el texto COMPLETO de todos los documentos. Podés responder cualquier pregunta sobre su contenido.")
+            } else {
+                appendLine("Los documentos son extensos. Se incluyen los fragmentos más relevantes para la consulta actual.")
+                appendLine("Si el usuario pregunta algo que no aparece en los fragmentos, indicalo claramente.")
+            }
+            appendLine()
+            appendLine("══════ CONTENIDO DE DOCUMENTOS ══════")
+            appendLine(contextBlock)
+            appendLine("══════ FIN DE DOCUMENTOS ══════")
+        }
+
+        val totalEstimated = estimateTokens(systemPrompt) + estimateTokens(query)
+        return Pair(systemPrompt, totalEstimated)
     }
 
     private suspend fun collectInferenceStream(
@@ -196,48 +302,17 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Construye el system prompt incluyendo el contenido real de los documentos seleccionados.
-     * documentContent: mapa nodeId → texto extraído (ya truncado a 6000 chars por doc en RagEngine).
-     * docNames: nombres de archivo para identificar cada sección.
-     */
-    private fun buildSystemPrompt(
-        docNames: List<String>,
-        documentContent: Map<String, String>
-    ): String = buildString {
-        appendLine("Eres FENIX IA, un asistente inteligente.")
-
-        if (documentContent.isNotEmpty()) {
-            appendLine()
-            appendLine("═══════════════════════════════")
-            appendLine("CONTENIDO DE DOCUMENTOS CARGADOS")
-            appendLine("═══════════════════════════════")
-            appendLine("Tienes acceso COMPLETO al contenido de los siguientes documentos.")
-            appendLine("Úsalos para responder con precisión a las preguntas del usuario.")
-            appendLine()
-
-            documentContent.entries.forEachIndexed { index, (nodeId, content) ->
-                val name = docNames.getOrElse(index) { nodeId }
-                appendLine("--- DOCUMENTO: $name ---")
-                appendLine(content)
-                appendLine()
-            }
-
-            appendLine("═══════════════════════════════")
-            appendLine("FIN DE DOCUMENTOS")
-            appendLine("═══════════════════════════════")
-        }
-    }
-
-    private fun estimateTokens(text: String): Int = (text.length / 4).coerceAtLeast(1)
+    private fun estimateTokens(text: String): Int =
+        (text.length / CHARS_PER_TOKEN).coerceAtLeast(1)
 
     private fun detectTaskType(content: String): TaskType {
         val lower = content.lowercase()
         return when {
             lower.contains("código") || lower.contains("code") ||
             lower.contains("function") || lower.contains("class") ||
-            lower.contains("kotlin") || lower.contains("python") -> TaskType.CODE_GENERATION
-            lower.length > 500 -> TaskType.DOCUMENT_ANALYSIS
+            lower.contains("kotlin") || lower.contains("python") ||
+            lower.contains("java") || lower.contains("sql") -> TaskType.CODE_GENERATION
+            lower.length > 300 -> TaskType.DOCUMENT_ANALYSIS
             else -> TaskType.FAST_CHAT
         }
     }

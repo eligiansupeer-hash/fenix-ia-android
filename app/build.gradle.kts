@@ -125,6 +125,11 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.mlkit.text.recognition)
 
+    // ── Web scraping / Deep Research ─────────────────────────────────────────
+    // Ksoup: parser HTML puro Kotlin. ksoup-network incluye cliente HTTP propio
+    // (usa Ktor internamente). Sin WebView, sin dependencia de Android framework.
+    implementation(libs.ksoup)
+
     // ── Tests ─────────────────────────────────────────────────────────────────
     testImplementation(libs.junit5)
     testImplementation(libs.junit4)

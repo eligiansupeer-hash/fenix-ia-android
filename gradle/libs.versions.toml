@@ -17,6 +17,11 @@ mockk = "1.13.13"
 # Apache POI — extracción texto DOCX (R-04: sin renderizado, solo texto)
 apachePoi = "5.3.0"
 commonsCompress = "1.27.1"
+# PdfBox Android — extrae texto nativo de PDFs sin renderizar bitmaps (R-04 compliant)
+# Puerto Android de Apache PDFBox. ~3 MB. Funciona offline, sin servicios de red.
+pdfboxAndroid = "2.0.27.0"
+# ML Kit Text Recognition — OCR para PDFs escaneados (imágenes sin texto embebido)
+mlkitTextRecognition = "16.0.0"
 
 [libraries]
 # Compose
@@ -67,6 +72,10 @@ tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.
 # Apache POI — extracción texto DOCX sin renderizado (R-04 compliant)
 apache-poi-ooxml = { group = "org.apache.poi", name = "poi-ooxml", version.ref = "apachePoi" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
+# PdfBox Android — extrae texto nativo del stream PDF (sin renderizar bitmaps)
+pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
+# ML Kit Text Recognition — OCR real para PDFs escaneados e imágenes JPG/PNG
+mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 # Tests
 junit5 = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit5" }
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }

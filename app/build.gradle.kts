@@ -19,7 +19,6 @@ android {
         versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Room AutoMigration requiere exportSchema = true + schemaLocation
         ksp {
             arg("room.schemaLocation", "$projectDir/schemas")
             arg("room.incremental", "true")
@@ -92,7 +91,7 @@ dependencies {
     // DataStore + Keystore
     implementation(libs.datastore.preferences)
 
-    // Ktor HTTP Client
+    // Ktor HTTP Client — usado por WebResearcher para búsqueda/scraping
     implementation(libs.ktor.client.android)
     implementation(libs.ktor.client.cio)
     implementation(libs.ktor.content.negotiation)
@@ -126,9 +125,9 @@ dependencies {
     implementation(libs.mlkit.text.recognition)
 
     // ── Web scraping / Deep Research ─────────────────────────────────────────
-    // Ksoup: parser HTML puro Kotlin. ksoup-network incluye cliente HTTP propio
-    // (usa Ktor internamente). Sin WebView, sin dependencia de Android framework.
-    implementation(libs.ksoup)
+    // WebResearcher usa stdlib Kotlin para parsing HTML (sin dependencias externas).
+    // Ksoup eliminado para evitar conflictos de classpath con Ktor.
+    // Si se necesita parsing DOM avanzado en el futuro, agregar Jsoup Android.
 
     // ── Tests ─────────────────────────────────────────────────────────────────
     testImplementation(libs.junit5)

@@ -31,6 +31,11 @@ import kotlin.coroutines.resume
  *   1. checkForUpdate() → compara LOCAL_VERSION_CODE vs tag remoto
  *   2. Si hay update → downloadAndInstall() via DownloadManager (R-04 safe)
  *   3. DownloadManager notifica al completar → lanza instalador del sistema
+ *
+ * Manejo de casos especiales:
+ *   • HTTP 404 → el repo no tiene releases publicados → UpdateResult.NoReleases
+ *   • Tag sin número → UpdateResult.Error con mensaje descriptivo
+ *   • Sin APK en el release → UpdateResult.Error indicando el problema
  */
 @Singleton
 class UpdateChecker @Inject constructor(
@@ -56,39 +61,55 @@ class UpdateChecker @Inject constructor(
                 header("User-Agent", "FenixIA-Android/$LOCAL_VERSION_NAME")
             }
 
-            if (response.status.value != 200) {
-                return UpdateResult.Error("GitHub API respondió ${response.status.value}")
+            when (response.status.value) {
+                200 -> parseReleaseResponse(response)
+                404 -> {
+                    // 404 significa que el repo no tiene ningún release publicado todavía.
+                    // No es un error de red — es un estado válido.
+                    UpdateResult.NoReleases
+                }
+                403 -> UpdateResult.Error("Rate limit de GitHub alcanzado. Intentá más tarde.")
+                else -> UpdateResult.Error("GitHub API respondió ${response.status.value}")
             }
-
-            val release = json.decodeFromString<GithubRelease>(response.body())
-
-            val remoteVersionCode = release.tagName
-                .removePrefix("v")
-                .toIntOrNull()
-                ?: return UpdateResult.Error("Tag inválido: ${release.tagName}")
-
-            if (remoteVersionCode <= LOCAL_VERSION_CODE) {
-                return UpdateResult.UpToDate(
-                    currentVersion = LOCAL_VERSION_CODE,
-                    remoteVersion = remoteVersionCode
-                )
-            }
-
-            val apkAsset = release.assets.firstOrNull {
-                it.name.endsWith(".apk", ignoreCase = true)
-            } ?: return UpdateResult.Error("No se encontró APK en el release $remoteVersionCode")
-
-            UpdateResult.UpdateAvailable(
-                currentVersion = LOCAL_VERSION_CODE,
-                newVersion = remoteVersionCode,
-                releaseNotes = release.body.take(500),
-                apkUrl = apkAsset.browserDownloadUrl,
-                apkSizeBytes = apkAsset.size
-            )
 
         } catch (e: Exception) {
             UpdateResult.Error("Error de red: ${e.message}")
         }
+    }
+
+    private suspend fun parseReleaseResponse(response: HttpResponse): UpdateResult {
+        val release = try {
+            json.decodeFromString<GithubRelease>(response.body())
+        } catch (e: Exception) {
+            return UpdateResult.Error("Respuesta inválida de GitHub: ${e.message}")
+        }
+
+        val remoteVersionCode = release.tagName
+            .removePrefix("v")
+            .toIntOrNull()
+            ?: return UpdateResult.Error("Tag de release inválido: '${release.tagName}'. Se esperaba formato 'v1', 'v2', etc.")
+
+        if (remoteVersionCode <= LOCAL_VERSION_CODE) {
+            return UpdateResult.UpToDate(
+                currentVersion = LOCAL_VERSION_CODE,
+                remoteVersion = remoteVersionCode
+            )
+        }
+
+        val apkAsset = release.assets.firstOrNull {
+            it.name.endsWith(".apk", ignoreCase = true)
+        } ?: return UpdateResult.Error(
+            "El release v${release.tagName} no contiene un APK adjunto. " +
+            "Verificá que el release en GitHub tenga un archivo .apk como asset."
+        )
+
+        return UpdateResult.UpdateAvailable(
+            currentVersion = LOCAL_VERSION_CODE,
+            newVersion = remoteVersionCode,
+            releaseNotes = release.body.take(500),
+            apkUrl = apkAsset.browserDownloadUrl,
+            apkSizeBytes = apkAsset.size
+        )
     }
 
     suspend fun downloadAndInstall(
@@ -196,6 +217,8 @@ sealed class UpdateResult {
         val apkSizeBytes: Long
     ) : UpdateResult()
     data class UpToDate(val currentVersion: Int, val remoteVersion: Int) : UpdateResult()
+    /** El repo no tiene releases publicados todavía — no es un error. */
+    object NoReleases : UpdateResult()
     data class Error(val message: String) : UpdateResult()
 }
 

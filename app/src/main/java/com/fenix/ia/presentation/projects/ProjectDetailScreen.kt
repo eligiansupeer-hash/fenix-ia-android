@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.collectLatest
 fun ProjectDetailScreen(
     projectId: String,
     onNavigateToChat: (chatId: String) -> Unit,
+    onNavigateToWorkflow: () -> Unit = {},
     onBack: () -> Unit,
     viewModel: ProjectDetailViewModel = hiltViewModel()
 ) {
@@ -46,7 +48,6 @@ fun ProjectDetailScreen(
         }
     }
 
-    // File picker — acepta PDF, DOCX, TXT, MD, XLSX, imágenes
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
@@ -65,6 +66,13 @@ fun ProjectDetailScreen(
                     }
                 },
                 actions = {
+                    // Botón ⚡ Agentes → WorkflowScreen
+                    IconButton(onClick = onNavigateToWorkflow) {
+                        Icon(
+                            imageVector        = Icons.Default.FlashOn,
+                            contentDescription = "Agentes autónomos"
+                        )
+                    }
                     // Botón cargar documentos
                     IconButton(onClick = {
                         filePicker.launch(arrayOf(
@@ -111,11 +119,17 @@ fun ProjectDetailScreen(
                 items(uiState.documents, key = { it.id }) { doc ->
                     DocumentCard(
                         document = doc,
-                        onToggle = { viewModel.processIntent(ProjectDetailIntent.ToggleDocumentCheckpoint(doc.id, !doc.isChecked)) },
-                        onDelete = { viewModel.processIntent(ProjectDetailIntent.DeleteDocument(doc.id)) }
+                        onToggle = {
+                            viewModel.processIntent(
+                                ProjectDetailIntent.ToggleDocumentCheckpoint(doc.id, !doc.isChecked)
+                            )
+                        },
+                        onDelete = {
+                            viewModel.processIntent(ProjectDetailIntent.DeleteDocument(doc.id))
+                        }
                     )
                 }
-                item { Divider(modifier = Modifier.padding(vertical = 8.dp)) }
+                item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
             }
 
             if (uiState.isIngesting) {
@@ -125,7 +139,10 @@ fun ProjectDetailScreen(
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        CircularProgressIndicator(
+                            modifier    = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Procesando documento...", style = MaterialTheme.typography.bodySmall)
                     }
@@ -154,9 +171,11 @@ fun ProjectDetailScreen(
             } else {
                 items(uiState.chats, key = { it.id }) { chat ->
                     ChatCard(
-                        chat = chat,
+                        chat     = chat,
                         onSelect = { viewModel.processIntent(ProjectDetailIntent.SelectChat(chat)) },
-                        onDelete = { viewModel.processIntent(ProjectDetailIntent.DeleteChat(chat.id)) }
+                        onDelete = {
+                            viewModel.processIntent(ProjectDetailIntent.DeleteChat(chat.id))
+                        }
                     )
                 }
             }
@@ -178,7 +197,11 @@ private fun ChatCard(chat: Chat, onSelect: () -> Unit, onDelete: () -> Unit) {
                 Text(text = chat.title, style = MaterialTheme.typography.bodyLarge)
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = "Eliminar chat", modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Eliminar chat",
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }
@@ -195,17 +218,25 @@ private fun DocumentCard(document: DocumentNode, onToggle: () -> Unit, onDelete:
             Checkbox(checked = document.isChecked, onCheckedChange = { onToggle() })
             Spacer(modifier = Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = document.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                Text(
+                    text       = document.name,
+                    style      = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
                 if (document.semanticSummary.isNotBlank()) {
                     Text(
-                        text = document.semanticSummary.take(80),
+                        text  = document.semanticSummary.take(80),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = "Eliminar", modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Eliminar",
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }

@@ -26,4 +26,7 @@ abstract class RepositoryModule {
 
     @Binds @Singleton
     abstract fun bindDocumentRepository(impl: DocumentRepositoryImpl): DocumentRepository
+
+    @Binds @Singleton
+    abstract fun bindToolRepository(impl: ToolRepositoryImpl): ToolRepository
 }

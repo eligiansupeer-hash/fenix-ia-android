@@ -13,6 +13,7 @@ data class UpdateUiState(
     val downloadProgress: Int = 0,          // 0-100
     val updateAvailable: UpdateResult.UpdateAvailable? = null,
     val isUpToDate: Boolean = false,
+    val noReleases: Boolean = false,        // repo sin releases publicados — no es error
     val error: String? = null,
     val installReady: Boolean = false       // descarga completa, esperando confirmación usuario
 )
@@ -43,7 +44,14 @@ class UpdateViewModel @Inject constructor(
 
     private fun checkForUpdate() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isChecking = true, error = null, isUpToDate = false) }
+            _uiState.update {
+                it.copy(
+                    isChecking = true,
+                    error = null,
+                    isUpToDate = false,
+                    noReleases = false
+                )
+            }
 
             when (val result = updateChecker.checkForUpdate()) {
                 is UpdateResult.UpdateAvailable -> {
@@ -54,6 +62,12 @@ class UpdateViewModel @Inject constructor(
                 is UpdateResult.UpToDate -> {
                     _uiState.update {
                         it.copy(isChecking = false, isUpToDate = true)
+                    }
+                }
+                is UpdateResult.NoReleases -> {
+                    // El repo no tiene releases — informamos sin mostrar error
+                    _uiState.update {
+                        it.copy(isChecking = false, noReleases = true)
                     }
                 }
                 is UpdateResult.Error -> {

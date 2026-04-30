@@ -62,7 +62,6 @@ fun SettingsScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        // verticalScroll: GITHUB_MODELS y cualquier card expandido son accesibles
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -77,6 +76,7 @@ fun SettingsScreen(
                 isDownloading = updateState.isDownloading,
                 downloadProgress = updateState.downloadProgress,
                 isUpToDate = updateState.isUpToDate,
+                noReleases = updateState.noReleases,
                 installReady = updateState.installReady,
                 onCheckForUpdate = { updateViewModel.processIntent(UpdateIntent.CheckForUpdate) }
             )
@@ -99,7 +99,6 @@ fun SettingsScreen(
                 )
             }
 
-            // Espacio extra al final para que el último card sea cómodo de usar
             Spacer(modifier = Modifier.height(32.dp))
         }
     }
@@ -111,6 +110,7 @@ private fun UpdateSection(
     isDownloading: Boolean,
     downloadProgress: Int,
     isUpToDate: Boolean,
+    noReleases: Boolean,
     installReady: Boolean,
     onCheckForUpdate: () -> Unit
 ) {
@@ -148,11 +148,12 @@ private fun UpdateSection(
 
             AnimatedContent(
                 targetState = when {
-                    installReady   -> UpdateUiPhase.INSTALL_READY
-                    isDownloading  -> UpdateUiPhase.DOWNLOADING
-                    isChecking     -> UpdateUiPhase.CHECKING
-                    isUpToDate     -> UpdateUiPhase.UP_TO_DATE
-                    else           -> UpdateUiPhase.IDLE
+                    installReady  -> UpdateUiPhase.INSTALL_READY
+                    isDownloading -> UpdateUiPhase.DOWNLOADING
+                    isChecking    -> UpdateUiPhase.CHECKING
+                    isUpToDate    -> UpdateUiPhase.UP_TO_DATE
+                    noReleases    -> UpdateUiPhase.NO_RELEASES
+                    else          -> UpdateUiPhase.IDLE
                 },
                 label = "update_phase"
             ) { phase ->
@@ -184,6 +185,11 @@ private fun UpdateSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
+                    UpdateUiPhase.NO_RELEASES -> Text(
+                        "Todavía no hay releases publicados en el repositorio.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     UpdateUiPhase.INSTALL_READY -> Text(
                         "✓ Descarga completa. El instalador del sistema se abrió automáticamente.",
                         style = MaterialTheme.typography.bodySmall,
@@ -195,7 +201,7 @@ private fun UpdateSection(
     }
 }
 
-private enum class UpdateUiPhase { IDLE, CHECKING, DOWNLOADING, UP_TO_DATE, INSTALL_READY }
+private enum class UpdateUiPhase { IDLE, CHECKING, DOWNLOADING, UP_TO_DATE, NO_RELEASES, INSTALL_READY }
 
 @Composable
 private fun UpdateAvailableDialog(

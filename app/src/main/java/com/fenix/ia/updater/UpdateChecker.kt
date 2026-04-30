@@ -48,8 +48,8 @@ class UpdateChecker @Inject constructor(
             "https://api.github.com/repos/eligiansupeer-hash/fenix-ia-android/releases/latest"
 
         // Sincronizar con versionCode / versionName en app/build.gradle.kts
-        const val LOCAL_VERSION_CODE = 1
-        const val LOCAL_VERSION_NAME = "1.0.0"
+        const val LOCAL_VERSION_CODE = 2
+        const val LOCAL_VERSION_NAME = "2.0.0"
     }
 
     private val json = Json { ignoreUnknownKeys = true }

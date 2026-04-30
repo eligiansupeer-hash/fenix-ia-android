@@ -43,8 +43,7 @@ class RagEngine @Inject constructor(
 
     /**
      * Búsqueda semántica por similaridad coseno.
-     * Requiere modelo TFLite cargado. Si los embeddings son placeholders,
-     * usar getChunksByDocumentNodeIds() como fallback.
+     * Retorna los [limit] chunks más relevantes para la query.
      */
     suspend fun search(
         query: String,
@@ -55,40 +54,71 @@ class RagEngine @Inject constructor(
         chunkBox.query(
             DocumentChunk_.embeddingVector.nearestNeighbors(queryVector, limit)
                 .and(DocumentChunk_.projectId.equal(projectId))
-        ).build().use { q ->
-            q.find()
-        }
+        ).build().use { q -> q.find() }
     }
 
     /**
-     * Obtiene el contenido textual de documentos por sus IDs de nodo Room.
-     * No requiere embeddings — funciona aunque el modelo TFLite sea placeholder.
-     * Retorna mapa documentNodeId → texto concatenado (truncado a maxCharsPerDoc).
+     * Devuelve el texto COMPLETO de los documentos especificados, reconstruido
+     * desde sus chunks ordenados por índice.
      *
-     * Usar como fuente de contexto para el LLM cuando RAG semántico no está disponible.
+     * NO tiene límite de caracteres por documento — el límite es el context window
+     * del LLM y es responsabilidad del ChatViewModel decidir si cabe o no.
+     *
+     * Retorna mapa documentNodeId → texto completo.
+     * Documentos sin chunks (no indexados aún) quedan fuera del mapa.
      */
-    suspend fun getChunksByDocumentNodeIds(
-        documentNodeIds: List<String>,
-        maxCharsPerDoc: Int = 6000
+    suspend fun getFullTextByDocumentNodeIds(
+        documentNodeIds: List<String>
     ): Map<String, String> = withContext(Dispatchers.IO) {
         if (documentNodeIds.isEmpty()) return@withContext emptyMap()
 
         documentNodeIds.associateWith { nodeId ->
-            val chunks = chunkBox
+            chunkBox
                 .query(DocumentChunk_.documentNodeId.equal(nodeId))
                 .order(DocumentChunk_.chunkIndex)
                 .build()
                 .use { q -> q.find() }
-
-            chunks
                 .joinToString("\n") { it.textPayload }
-                .take(maxCharsPerDoc)
         }.filterValues { it.isNotBlank() }
     }
 
     /**
-     * Verifica si un documento ya fue indexado (tiene al menos un chunk).
+     * Cuenta el total de tokens almacenados para un conjunto de documentos.
+     * Útil para decidir si usar texto completo o RAG semántico.
      */
+    suspend fun estimateTotalTokens(documentNodeIds: List<String>): Int =
+        withContext(Dispatchers.IO) {
+            if (documentNodeIds.isEmpty()) return@withContext 0
+            documentNodeIds.sumOf { nodeId ->
+                chunkBox
+                    .query(DocumentChunk_.documentNodeId.equal(nodeId))
+                    .build()
+                    .use { q -> q.find() }
+                    .sumOf { it.tokenCount }
+            }
+        }
+
+    /**
+     * Búsqueda semántica por query restringida a documentos específicos.
+     * Usado cuando el contexto total supera el context window — en vez de
+     * meter todo, buscamos los chunks más relevantes para la pregunta actual.
+     */
+    suspend fun searchInDocuments(
+        query: String,
+        documentNodeIds: List<String>,
+        limit: Int = 15
+    ): List<DocumentChunk> = withContext(Dispatchers.Default) {
+        if (documentNodeIds.isEmpty()) return@withContext emptyList()
+        val queryVector = embeddingModel.encode(query)
+
+        // Busca globalmente y filtra por los documentos seleccionados
+        chunkBox.query(
+            DocumentChunk_.embeddingVector.nearestNeighbors(queryVector, limit * 3)
+        ).build().use { q ->
+            q.find().filter { it.documentNodeId in documentNodeIds }.take(limit)
+        }
+    }
+
     suspend fun isDocumentIndexed(documentNodeId: String): Boolean = withContext(Dispatchers.IO) {
         chunkBox.query(DocumentChunk_.documentNodeId.equal(documentNodeId))
             .build().use { q -> q.count() > 0 }

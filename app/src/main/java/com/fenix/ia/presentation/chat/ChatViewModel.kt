@@ -39,28 +39,9 @@ class ChatViewModel @Inject constructor(
     private var streamingJob: Job? = null
 
     companion object {
-        /**
-         * Umbral de tokens para decidir estrategia de contexto:
-         *
-         * <= FULL_CONTEXT_TOKEN_LIMIT → texto completo de todos los docs en el system prompt.
-         *    El LLM ve TODO el contenido. Ideal para docs cortos/medianos.
-         *
-         *  > FULL_CONTEXT_TOKEN_LIMIT → RAG semántico: solo los chunks más relevantes
-         *    para la query actual. Necesario para docs muy largos o muchos docs.
-         *
-         * 60_000 tokens ≈ límite conservador que funciona en Gemini (1M tokens),
-         * Groq (128k), Mistral (128k) y OpenRouter (según modelo).
-         * Para Gemini se puede subir a 500_000 si se detecta ese proveedor.
-         */
         private const val FULL_CONTEXT_TOKEN_LIMIT = 60_000
-
-        // Cuántos chars equivalen aproximadamente a 1 token (promedio inglés/español)
         private const val CHARS_PER_TOKEN = 4
-
-        // Cuántos chunks RAG traer cuando el contenido es demasiado largo
         private const val RAG_CHUNK_LIMIT = 20
-
-        // Máximo de mensajes de historial a incluir en cada request
         private const val MAX_HISTORY_MESSAGES = 30
     }
 
@@ -103,7 +84,7 @@ class ChatViewModel @Inject constructor(
             messageRepository.insertMessage(userMessage)
 
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
-            val (systemPrompt, estimatedTokens) = buildContextForQuery(content, checkedDocs)
+            val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(content, checkedDocs)
 
             val provider = llmRouter.selectProvider(
                 estimatedTokens = estimatedTokens,
@@ -111,7 +92,15 @@ class ChatViewModel @Inject constructor(
             )
 
             _uiState.update {
-                it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null)
+                it.copy(
+                    isStreaming = true,
+                    streamingBuffer = "",
+                    activeProvider = provider,
+                    contextMode = contextMode,
+                    contextDocumentCount = checkedDocs.size,
+                    contextTokenCount = estimatedTokens,
+                    error = null
+                )
             }
 
             streamingJob = viewModelScope.launch {
@@ -133,7 +122,7 @@ class ChatViewModel @Inject constructor(
             messageRepository.deleteMessage(lastAssistant.id)
 
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
-            val (systemPrompt, estimatedTokens) = buildContextForQuery(lastUserContent, checkedDocs)
+            val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(lastUserContent, checkedDocs)
 
             val provider = llmRouter.selectProvider(
                 estimatedTokens = estimatedTokens,
@@ -146,7 +135,15 @@ class ChatViewModel @Inject constructor(
                 .map { LlmMessage(it.role.name.lowercase(), it.content) }
 
             _uiState.update {
-                it.copy(isStreaming = true, streamingBuffer = "", activeProvider = provider, error = null)
+                it.copy(
+                    isStreaming = true,
+                    streamingBuffer = "",
+                    activeProvider = provider,
+                    contextMode = contextMode,
+                    contextDocumentCount = checkedDocs.size,
+                    contextTokenCount = estimatedTokens,
+                    error = null
+                )
             }
 
             streamingJob = viewModelScope.launch {
@@ -156,59 +153,55 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
-     * Construye el contexto documental para la query actual usando la estrategia adecuada:
+     * Estrategia A — FULL (total <= 60k tokens):
+     *   Todo el texto de todos los documentos va al system prompt.
+     *   El LLM lee el documento entero.
      *
-     * Estrategia A — Texto completo (docs cortos/medianos):
-     *   Si el total de tokens de los documentos seleccionados cabe en el context window,
-     *   manda TODO el contenido de TODOS los documentos. El LLM puede responder
-     *   cualquier pregunta sobre cualquier parte del documento.
+     * Estrategia B — RAG (total > 60k tokens):
+     *   Solo los chunks semánticamente más cercanos a la query.
      *
-     * Estrategia B — RAG semántico (docs largos):
-     *   Si el total supera el umbral, busca los chunks más relevantes para la query
-     *   actual. El LLM solo ve los fragmentos pertinentes a la pregunta.
-     *
-     * Retorna (systemPrompt, estimatedTokensTotal).
+     * Retorna Triple(systemPrompt, estimatedTokens, ContextMode).
      */
     private suspend fun buildContextForQuery(
         query: String,
         checkedDocs: List<DocumentNode>
-    ): Pair<String, Int> {
+    ): Triple<String, Int, ContextMode> {
         if (checkedDocs.isEmpty()) {
             val prompt = "Eres FENIX IA, un asistente inteligente y preciso."
-            return Pair(prompt, estimateTokens(query))
+            return Triple(prompt, estimateTokens(query), ContextMode.NONE)
         }
 
         val docIds = checkedDocs.map { it.id }
-
-        // Mide el tamaño total del contenido indexado
-        val totalTokens = ragEngine.estimateTotalTokens(docIds)
+        val totalDocTokens = ragEngine.estimateTotalTokens(docIds)
 
         val contextBlock: String
-        val strategyLabel: String
+        val contextMode: ContextMode
 
-        if (totalTokens <= FULL_CONTEXT_TOKEN_LIMIT) {
-            // ── Estrategia A: texto completo ──────────────────────────────────
-            strategyLabel = "COMPLETO"
+        if (totalDocTokens <= FULL_CONTEXT_TOKEN_LIMIT) {
+            contextMode = ContextMode.FULL
             val fullTexts = ragEngine.getFullTextByDocumentNodeIds(docIds)
             contextBlock = buildString {
-                fullTexts.entries.forEachIndexed { index, (nodeId, text) ->
-                    val name = checkedDocs.getOrNull(index)?.name ?: nodeId
-                    appendLine("════════════════════════════════")
-                    appendLine("DOCUMENTO: $name")
-                    appendLine("════════════════════════════════")
-                    appendLine(text)
-                    appendLine()
+                if (fullTexts.isEmpty()) {
+                    appendLine("(Los documentos seleccionados aún no terminaron de procesarse.)")
+                } else {
+                    fullTexts.entries.forEachIndexed { index, (nodeId, text) ->
+                        val name = checkedDocs.getOrNull(index)?.name ?: nodeId
+                        appendLine("════════════════════════════════")
+                        appendLine("DOCUMENTO: $name")
+                        appendLine("════════════════════════════════")
+                        appendLine(text)
+                        appendLine()
+                    }
                 }
             }
         } else {
-            // ── Estrategia B: RAG semántico ───────────────────────────────────
-            strategyLabel = "RAG"
+            contextMode = ContextMode.RAG
             val relevantChunks = ragEngine.searchInDocuments(query, docIds, limit = RAG_CHUNK_LIMIT)
             contextBlock = if (relevantChunks.isEmpty()) {
-                "(No se encontraron fragmentos relevantes para esta consulta en los documentos seleccionados.)"
+                "(No se encontraron fragmentos relevantes. Los documentos pueden estar procesándose todavía.)"
             } else {
                 buildString {
-                    appendLine("Fragmentos relevantes de los documentos (ordenados por relevancia):")
+                    appendLine("Fragmentos más relevantes para la consulta (ordenados por relevancia):")
                     appendLine()
                     relevantChunks.forEachIndexed { i, chunk ->
                         val name = checkedDocs.firstOrNull { it.id == chunk.documentNodeId }?.name
@@ -224,26 +217,29 @@ class ChatViewModel @Inject constructor(
         val systemPrompt = buildString {
             appendLine("Eres FENIX IA, un asistente inteligente y preciso.")
             appendLine()
-            appendLine("Tienes acceso al contenido de los siguientes documentos cargados por el usuario:")
-            checkedDocs.forEachIndexed { i, doc ->
-                appendLine("  ${i + 1}. ${doc.name}")
+            appendLine("El usuario ha seleccionado los siguientes documentos como contexto:")
+            checkedDocs.forEachIndexed { i, doc -> appendLine("  ${i + 1}. ${doc.name}") }
+            appendLine()
+            when (contextMode) {
+                ContextMode.FULL -> {
+                    appendLine("Tenés acceso al texto COMPLETO de todos los documentos.")
+                    appendLine("Podés responder cualquier pregunta sobre su contenido con precisión.")
+                }
+                ContextMode.RAG -> {
+                    appendLine("Los documentos son extensos (~${totalDocTokens / 1000}k tokens).")
+                    appendLine("Se incluyen los fragmentos más relevantes para la pregunta actual.")
+                    appendLine("Si el usuario pregunta algo fuera de los fragmentos, indicalo.")
+                }
+                ContextMode.NONE -> {}
             }
             appendLine()
-            appendLine("Modo de contexto: $strategyLabel")
-            if (strategyLabel == "COMPLETO") {
-                appendLine("Tienes el texto COMPLETO de todos los documentos. Podés responder cualquier pregunta sobre su contenido.")
-            } else {
-                appendLine("Los documentos son extensos. Se incluyen los fragmentos más relevantes para la consulta actual.")
-                appendLine("Si el usuario pregunta algo que no aparece en los fragmentos, indicalo claramente.")
-            }
-            appendLine()
-            appendLine("══════ CONTENIDO DE DOCUMENTOS ══════")
-            appendLine(contextBlock)
-            appendLine("══════ FIN DE DOCUMENTOS ══════")
+            appendLine("══════════════ CONTENIDO ══════════════")
+            append(contextBlock)
+            appendLine("══════════════ FIN ══════════════")
         }
 
-        val totalEstimated = estimateTokens(systemPrompt) + estimateTokens(query)
-        return Pair(systemPrompt, totalEstimated)
+        val estimatedTokens = estimateTokens(systemPrompt) + estimateTokens(query)
+        return Triple(systemPrompt, estimatedTokens, contextMode)
     }
 
     private suspend fun collectInferenceStream(
@@ -258,11 +254,10 @@ class ChatViewModel @Inject constructor(
             provider = provider
         ).collect { event ->
             when (event) {
-                is StreamEvent.Token -> {
+                is StreamEvent.Token ->
                     _uiState.update { state ->
                         state.copy(streamingBuffer = state.streamingBuffer + event.text)
                     }
-                }
                 is StreamEvent.Done -> {
                     val finalContent = _uiState.value.streamingBuffer
                     if (finalContent.isNotBlank()) {
@@ -276,16 +271,14 @@ class ChatViewModel @Inject constructor(
                             )
                         )
                     }
-                    // INVARIANTE NODO-13: streamingBuffer siempre se resetea a "" tras Done
+                    // INVARIANTE NODO-13: streamingBuffer siempre "" tras Done
                     _uiState.update { it.copy(isStreaming = false, streamingBuffer = "") }
                     _effects.send(ChatEffect.ScrollToBottom)
                 }
-                is StreamEvent.Error -> {
+                is StreamEvent.Error ->
                     _uiState.update { it.copy(isStreaming = false, error = event.message) }
-                }
-                is StreamEvent.ProviderFallback -> {
+                is StreamEvent.ProviderFallback ->
                     _uiState.update { it.copy(activeProvider = event.to) }
-                }
             }
         }
     }

@@ -10,15 +10,18 @@ import com.fenix.ia.presentation.chat.ChatScreen
 import com.fenix.ia.presentation.projects.ProjectDetailScreen
 import com.fenix.ia.presentation.projects.ProjectListScreen
 import com.fenix.ia.presentation.settings.SettingsScreen
+import com.fenix.ia.presentation.workflow.WorkflowScreen
 
 object Routes {
-    const val PROJECTS = "projects"
+    const val PROJECTS       = "projects"
     const val PROJECT_DETAIL = "project/{projectId}"
-    const val CHAT = "chat/{projectId}/{chatId}"
-    const val SETTINGS = "settings"
+    const val CHAT           = "chat/{projectId}/{chatId}"
+    const val SETTINGS       = "settings"
+    const val WORKFLOW       = "workflow/{projectId}"   // Fase 3 — NODO-B3
 
     fun projectDetail(projectId: String) = "project/$projectId"
     fun chat(projectId: String, chatId: String) = "chat/$projectId/$chatId"
+    fun workflow(projectId: String) = "workflow/$projectId"
 }
 
 @Composable
@@ -28,47 +31,53 @@ fun FenixNavHost() {
 
         composable(Routes.PROJECTS) {
             ProjectListScreen(
-                onNavigateToProject = { projectId ->
-                    navController.navigate(Routes.projectDetail(projectId))
-                },
-                onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS)
-                }
+                onNavigateToProject  = { navController.navigate(Routes.projectDetail(it)) },
+                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
             )
         }
 
         composable(
-            route = Routes.PROJECT_DETAIL,
+            route     = Routes.PROJECT_DETAIL,
             arguments = listOf(navArgument("projectId") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
+        ) { back ->
+            val projectId = back.arguments?.getString("projectId") ?: return@composable
             ProjectDetailScreen(
-                projectId = projectId,
-                onNavigateToChat = { chatId ->
-                    navController.navigate(Routes.chat(projectId, chatId))
-                },
-                onBack = { navController.popBackStack() }
+                projectId         = projectId,
+                onNavigateToChat  = { navController.navigate(Routes.chat(projectId, it)) },
+                onNavigateToWorkflow = { navController.navigate(Routes.workflow(projectId)) },
+                onBack            = { navController.popBackStack() }
             )
         }
 
         composable(
-            route = Routes.CHAT,
+            route     = Routes.CHAT,
             arguments = listOf(
                 navArgument("projectId") { type = NavType.StringType },
-                navArgument("chatId") { type = NavType.StringType }
+                navArgument("chatId")    { type = NavType.StringType }
             )
-        ) { backStackEntry ->
-            val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
-            val chatId = backStackEntry.arguments?.getString("chatId") ?: return@composable
+        ) { back ->
+            val projectId = back.arguments?.getString("projectId") ?: return@composable
+            val chatId    = back.arguments?.getString("chatId")    ?: return@composable
             ChatScreen(
-                chatId = chatId,
+                chatId    = chatId,
                 projectId = projectId,
-                onBack = { navController.popBackStack() }
+                onBack    = { navController.popBackStack() }
             )
         }
 
         composable(Routes.SETTINGS) {
             SettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route     = Routes.WORKFLOW,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { back ->
+            val projectId = back.arguments?.getString("projectId") ?: return@composable
+            WorkflowScreen(
+                projectId = projectId,
+                onBack    = { navController.popBackStack() }
+            )
         }
     }
 }

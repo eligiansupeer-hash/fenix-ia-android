@@ -6,11 +6,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.fenix.ia.presentation.artifacts.ArtifactsScreen
 import com.fenix.ia.presentation.chat.ChatScreen
 import com.fenix.ia.presentation.projects.ProjectDetailScreen
 import com.fenix.ia.presentation.projects.ProjectListScreen
 import com.fenix.ia.presentation.research.ResearchScreen
 import com.fenix.ia.presentation.settings.SettingsScreen
+import com.fenix.ia.presentation.tools.ToolsScreen
 import com.fenix.ia.presentation.workflow.WorkflowScreen
 
 object Routes {
@@ -18,13 +20,17 @@ object Routes {
     const val PROJECT_DETAIL = "project/{projectId}"
     const val CHAT           = "chat/{projectId}/{chatId}"
     const val SETTINGS       = "settings"
-    const val WORKFLOW       = "workflow/{projectId}"   // Fase 3 — NODO-B3
-    const val RESEARCH       = "research/{projectId}"  // Fase 4 — NODO-C3
+    const val WORKFLOW       = "workflow/{projectId}"   // Fase 3
+    const val RESEARCH       = "research/{projectId}"  // Fase 4
+    const val TOOLS          = "tools/{projectId}"     // Fase 6
+    const val ARTIFACTS      = "artifacts/{projectId}" // Fase 6
 
     fun projectDetail(projectId: String) = "project/$projectId"
     fun chat(projectId: String, chatId: String) = "chat/$projectId/$chatId"
     fun workflow(projectId: String) = "workflow/$projectId"
     fun research(projectId: String) = "research/$projectId"
+    fun tools(projectId: String) = "tools/$projectId"
+    fun artifacts(projectId: String) = "artifacts/$projectId"
 }
 
 @Composable
@@ -49,6 +55,8 @@ fun FenixNavHost() {
                 onNavigateToChat     = { navController.navigate(Routes.chat(projectId, it)) },
                 onNavigateToWorkflow = { navController.navigate(Routes.workflow(projectId)) },
                 onNavigateToResearch = { navController.navigate(Routes.research(projectId)) },
+                onNavigateToTools    = { navController.navigate(Routes.tools(projectId)) },
+                onNavigateToArtifacts = { navController.navigate(Routes.artifacts(projectId)) },
                 onBack               = { navController.popBackStack() }
             )
         }
@@ -90,6 +98,28 @@ fun FenixNavHost() {
         ) { back ->
             val projectId = back.arguments?.getString("projectId") ?: return@composable
             ResearchScreen(
+                projectId = projectId,
+                onBack    = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route     = Routes.TOOLS,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { back ->
+            val projectId = back.arguments?.getString("projectId") ?: return@composable
+            ToolsScreen(
+                projectId = projectId,
+                onBack    = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route     = Routes.ARTIFACTS,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { back ->
+            val projectId = back.arguments?.getString("projectId") ?: return@composable
+            ArtifactsScreen(
                 projectId = projectId,
                 onBack    = { navController.popBackStack() }
             )

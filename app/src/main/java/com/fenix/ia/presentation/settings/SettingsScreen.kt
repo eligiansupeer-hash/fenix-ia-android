@@ -7,12 +7,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.ApiProvider
@@ -83,6 +86,21 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ── Panel IA Local (Fase 5) ──────────────────────────────────────
+            LocalAiSection(
+                isCapable = uiState.isLocalCapable,
+                isDownloaded = uiState.isModelDownloaded,
+                isReady = uiState.isModelReady,
+                isDownloading = uiState.isDownloading,
+                progress = uiState.downloadProgress,
+                localError = uiState.localError,
+                onDownload = viewModel::downloadModel,
+                onActivate = viewModel::activateModel,
+                onRelease = viewModel::releaseModel
+            )
+
+            HorizontalDivider()
+
             Text("API Keys", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Las claves se cifran con AES-256-GCM en el hardware TEE del dispositivo.",
@@ -103,6 +121,122 @@ fun SettingsScreen(
         }
     }
 }
+
+// ── Sección IA Local ─────────────────────────────────────────────────────────
+
+@Composable
+private fun LocalAiSection(
+    isCapable: Boolean,
+    isDownloaded: Boolean,
+    isReady: Boolean,
+    isDownloading: Boolean,
+    progress: Float,
+    localError: String?,
+    onDownload: () -> Unit,
+    onActivate: () -> Unit,
+    onRelease: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.PhoneAndroid,
+                    contentDescription = null,
+                    tint = if (isCapable) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.error
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("IA Local (On-Device)", style = MaterialTheme.typography.titleMedium)
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            if (!isCapable) {
+                Text(
+                    "RAM insuficiente. Requiere >= 4 GB RAM.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                return@Column
+            }
+
+            Text(
+                "Llama 3.2 1B Q4  ·  ~700 MB  ·  Offline total  ·  Privacidad completa",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            when {
+                isReady -> {
+                    Text(
+                        "✓ Modelo activo y listo",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = onRelease,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Liberar modelo (liberar RAM)")
+                    }
+                }
+                isDownloaded && !isDownloading -> {
+                    Text(
+                        "Modelo descargado. Listo para activar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Button(
+                        onClick = onActivate,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Activar modelo local")
+                    }
+                }
+                isDownloading -> {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Descargando: ${(progress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                else -> {
+                    OutlinedButton(
+                        onClick = onDownload,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Descargar modelo (~700 MB)")
+                    }
+                }
+            }
+
+            if (localError != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    localError,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+// ── Sección OTA ──────────────────────────────────────────────────────────────
 
 @Composable
 private fun UpdateSection(

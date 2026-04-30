@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-30 Abril 2026 — Sesión 9 (Manual Evolutivo v2: NODO-A2, NODO-A3 + fix CI)
+30 Abril 2026 — Sesión 10 (Fases 3 completa + Fase 4 completa)
 
 ---
 
@@ -19,89 +19,93 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | **A1** | ✅ COMPLETO (sesión anterior) |
 | **A2** | ✅ COMPLETO (sesión 9) |
 | **A3** | ✅ COMPLETO (sesión 9) |
-| **B1** | ⏳ PENDIENTE — próxima sesión |
-| **B2** | ⏳ PENDIENTE |
-| **B3** | ⏳ PENDIENTE |
-| C1–C3 | ⏳ PENDIENTE |
+| **B1** | ✅ COMPLETO (sesión 10) |
+| **B2** | ✅ COMPLETO (sesión 10) |
+| **B3** | ✅ COMPLETO (sesión 10) |
+| **C1** | ✅ COMPLETO (sesión 10) |
+| **C2** | ✅ COMPLETO (sesión 10) |
+| **C3** | ✅ COMPLETO (sesión 10) |
 | D1–D3 | ⏳ PENDIENTE |
 | E1–E4 | ⏳ PENDIENTE |
 
 ---
 
-## 🔴 FIX CI — KSP Room schema (commit b5d2f2f + 5fcd7be)
+## 🟢 HITO SESIÓN 10: Fases 3 y 4 completas
 
-**Error:** `Schema '1.json' required for migration was not found`
+### Fase 3 — Sistema de Agentes (B1–B3)
+Confirmado que B1, B2 y B3 ya existían en el repo desde la sesión anterior (no registrados en SESSION_STATE).
 
-**Causa raíz:** `FenixDatabase` tenía `exportSchema = true` + `autoMigrations = [AutoMigration(from=1, to=2)]`.
-Room KSP busca en tiempo de compilación el archivo `app/schemas/.../1.json` para generar el código de migración automática.
-Ese JSON nunca se subió al repo (debió generarse y commitearse cuando se creó la v1).
+| Archivo | Estado |
+|---------|--------|
+| `domain/model/AgentRole.kt` | ✅ Creado (6 roles: REDACTOR, ANALISTA, PROGRAMADOR, INVESTIGADOR, SINTETIZADOR, AUDITOR) |
+| `domain/model/WorkflowPlan.kt` | ✅ Creado (WorkflowPlan + WorkflowStep + WorkflowStatus) |
+| `orchestrator/OrchestratorEngine.kt` | ✅ Creado (Blackboard pattern + audit opcional) |
+| `orchestrator/OrchestratorEvent.kt` | ✅ Creado (sealed class completa) |
+| `presentation/workflow/WorkflowViewModel.kt` | ✅ Creado |
+| `presentation/workflow/NodeGraphCanvas.kt` | ✅ Creado |
+| `presentation/workflow/WorkflowScreen.kt` | ✅ Creado |
 
-**Fix aplicado:**
-- `FenixDatabase.kt`: `exportSchema = false`, eliminado bloque `autoMigrations`
-- `AppModule.kt`: se agregó `provideToolDao()` + nota explicativa sobre `fallbackToDestructiveMigration`
-
-**Por qué es correcto:** en desarrollo `fallbackToDestructiveMigration()` ya estaba en el Room builder —
-destruye y recrea las tablas al detectar cambio de versión. No hay datos de producción que proteger.
-En el futuro, si se pasa a producción, reemplazar por `addMigrations(Migration(1,2) { db -> db.execSQL("CREATE TABLE...") })`.
-
----
-
-## 🟢 HITO SESIÓN 9: NODO-A2 + NODO-A3 completos
-
-### Archivos creados/modificados en sesión 9
+### Fase 4 — Deep Research (C1–C3)
+Implementada en sesión 10.
 
 | Archivo | Commit | Cambio |
 |---------|--------|--------|
-| `domain/repository/ToolRepository.kt` | `15c51b3` | Interface: getAllTools, insertTool, updateTool, deleteTool, getEnabledTools |
-| `data/repository/ToolRepositoryImpl.kt` | `decbafd` | Impl con mappers domain↔entity, JSON perms serialization |
-| `di/RepositoryModule.kt` | `559167a` | +bindToolRepository |
-| `tools/ToolSeeder.kt` | `d8cb1a8` | 14 tools semilla: documental, fs, rag, internet, codigo, sistema |
-| `FenixApp.kt` | `bf742e9` | +toolSeeder inject, seedIfEmpty() en onCreate |
-| `tools/ToolResult.kt` | `abb87ad` | sealed class Success/Error, isRetryable flag |
-| `tools/ToolExecutor.kt` | `544427f` | Dispatcher nativo: read_file, create_file, store_knowledge, retrieve_context + sandbox JS |
-| `data/local/db/FenixDatabase.kt` | `b5d2f2f` | **fix CI**: exportSchema=false, sin autoMigrations |
-| `di/AppModule.kt` | `5fcd7be` | **fix CI**: +provideToolDao |
-
-### Notas técnicas A2/A3:
-- `ToolRepositoryImpl` usa `kotlinx.serialization` para serializar `permissions: List<String>` a JSON string en Room
-- `ToolExecutor` adapta el API real de `DynamicExecutionEngine.execute(script, inputJson)` (no `executeScript`)
-- Tools no implementadas aún devuelven `ToolResult.Error` orientativo — se completan en Fases 3–6
+| `gradle/libs.versions.toml` | `27a79d9` | +ksoup 0.1.5 |
+| `app/build.gradle.kts` | `2327855` | +implementation(libs.ksoup) |
+| `research/WebResearcher.kt` | `3f64b54` | DuckDuckGo HTML + Ksoup scraper sin API keys |
+| `research/DeepResearchEngine.kt` | `7569ad2` | Pipeline IterDRAG con Semaphore(2) |
+| `presentation/research/ResearchViewModel.kt` | `cd45d62` | Estado + control del DeepResearchEngine |
+| `presentation/research/ResearchScreen.kt` | `da2df96` | UI con log tiempo real + síntesis + fuentes |
+| `presentation/FenixNavHost.kt` | `a1ea7fd` | +RESEARCH route + onNavigateToResearch |
+| `presentation/projects/ProjectDetailScreen.kt` | `dd81bc0` | +onNavigateToResearch + botón Search |
+| `tools/ToolExecutor.kt` | `7c97547` | +web_search +scrape_content via WebResearcher |
 
 ---
 
-## ⏭️ PRÓXIMA SESIÓN — NODO-B1 (inicio Fase 3: Sistema de Agentes)
+## ⏭️ PRÓXIMA SESIÓN — NODO-D1 (inicio Fase 5: IA Local)
 
 ### Archivos a crear:
 ```
-domain/model/AgentRole.kt     ← enum 6 roles (REDACTOR, ANALISTA, PROGRAMADOR,
-                                  INVESTIGADOR, SINTETIZADOR, AUDITOR)
-                                  cada uno con: systemPrompt, temperature, allowedTools
-domain/model/WorkflowPlan.kt  ← WorkflowPlan + WorkflowStep + WorkflowStatus enum
+local/LocalLlmEngine.kt        ← MediaPipe LLM Inference + descarga modelo Llama 3.2 1B Q4
+queue/TaskQueueManager.kt      ← Cola dual: Semaphore(1) urgentes + WorkManager diferibles
+queue/AgentWorker.kt           ← @HiltWorker para WorkManager encadenado
 ```
 
-### Dependencias de B1:
-- `AgentRole.allowedTools` referencia nombres de tools del catálogo A2 (strings, sin import)
-- B2 (OrchestratorEngine) depende de B1 y de LlmInferenceRouter (ya existente)
+### Archivos a modificar:
+```
+gradle/libs.versions.toml      ← +mediapipe = "0.10.14"
+app/build.gradle.kts           ← +implementation(libs.mediapipe.genai)
+presentation/settings/SettingsScreen.kt ← panel IA Local (D3)
+presentation/settings/SettingsViewModel.kt ← isLocalCapable, downloadProgress, etc.
+```
 
-### Verificar antes de arrancar B1:
-- CI verde (build-apk.yml) con commits b5d2f2f y 5fcd7be
-- Confirmar que `kotlinx.serialization` está en classpath (lo usa ToolRepositoryImpl)
+### Prerequisitos D1:
+- Verificar minSdk=26 compatible con MediaPipe 0.10.14
+- Si MediaPipe requiere minSdk > 26, ajustar defaultConfig.minSdk
+- El modelo Llama 3.2 1B Q4 (~700 MB) se descarga desde GitHub Releases vía UpdateChecker
+
+### Verificar antes de arrancar D1:
+- CI verde con todos los commits de sesión 10
+- Confirmar que Ksoup 0.1.5 compila con minSdk=26 (usa Ktor internamente, ya en classpath)
 
 ---
 
-## Estado general de la app (post sesión 9)
+## Estado general de la app (post sesión 10)
 
 | Función | Estado |
 |---------|--------|
 | Crear/borrar proyectos con system prompt | ✅ |
-| Configurar API keys (todos los providers, incl. GITHUB_MODELS) | ✅ |
+| Configurar API keys (todos los providers) | ✅ |
 | Chat con streaming SSE + fallback providers | ✅ |
-| Caja de texto visible con teclado abierto | ✅ |
-| Documentos seleccionados → contenido real llega al LLM | ✅ |
+| Documentos → contenido real llega al LLM | ✅ |
 | Auto-actualización OTA | ✅ |
-| Room v2 con tabla `tools` (sin AutoMigration, con fallback) | ✅ |
+| Room v2 con tabla `tools` | ✅ |
 | ToolSeeder siembra 14 tools al iniciar | ✅ |
-| ToolExecutor despacha read_file/create_file/RAG/sandbox | ✅ |
+| ToolExecutor: read_file, create_file, RAG, sandbox, **web_search, scrape_content** | ✅ |
+| Sistema de agentes (6 roles + OrchestratorEngine + Blackboard) | ✅ |
+| WorkflowScreen con NodeGraphCanvas | ✅ |
+| Deep Research: DuckDuckGo + Ksoup + IterDRAG | ✅ |
+| ResearchScreen con log en tiempo real | ✅ |
 
 ---
 
@@ -114,18 +118,22 @@ domain/model/WorkflowPlan.kt  ← WorkflowPlan + WorkflowStep + WorkflowStatus e
 - RAM idle < 100 MB PSS
 - `versionCode` en `build.gradle.kts` sincronizado con `LOCAL_VERSION_CODE` en `UpdateChecker.kt`
 
-## Historial de commits (sesiones 7–9)
-- `ff73076` — fix: @SerialName en GithubRelease/GithubAsset (s7)
-- `4395f5f` — feat: getChunksByDocumentNodeIds en RagEngine (s8)
-- `003f32d` — fix(BUG-1): ChatViewModel inyecta RagEngine (s8)
-- `ffde4ab` — fix(BUG-2): imePadding en ChatScreen (s8)
-- `0e82cd3` — fix(BUG-3): verticalScroll en SettingsScreen (s8)
-- `15c51b3` — feat(nodo-A2): ToolRepository interface (s9)
-- `decbafd` — feat(nodo-A2): ToolRepositoryImpl (s9)
-- `559167a` — feat(nodo-A2): bind ToolRepository DI (s9)
-- `d8cb1a8` — feat(nodo-A2): ToolSeeder 14 tools (s9)
-- `bf742e9` — feat(nodo-A2): FenixApp seedIfEmpty (s9)
-- `abb87ad` — feat(nodo-A3): ToolResult sealed class (s9)
-- `544427f` — feat(nodo-A3): ToolExecutor (s9)
-- `b5d2f2f` — fix(ci): FenixDatabase exportSchema=false (s9)
-- `5fcd7be` — fix(ci): AppModule +provideToolDao (s9)
+## Historial de commits (sesiones 9–10)
+- `15c51b3` — feat(nodo-A2): ToolRepository interface
+- `decbafd` — feat(nodo-A2): ToolRepositoryImpl
+- `559167a` — feat(nodo-A2): bind ToolRepository DI
+- `d8cb1a8` — feat(nodo-A2): ToolSeeder 14 tools
+- `bf742e9` — feat(nodo-A2): FenixApp seedIfEmpty
+- `abb87ad` — feat(nodo-A3): ToolResult sealed class
+- `544427f` — feat(nodo-A3): ToolExecutor
+- `b5d2f2f` — fix(ci): FenixDatabase exportSchema=false
+- `5fcd7be` — fix(ci): AppModule +provideToolDao
+- `27a79d9` — feat(nodo-C1): +ksoup en libs.versions.toml
+- `2327855` — feat(nodo-C1): +implementation(libs.ksoup) en build.gradle.kts
+- `3f64b54` — feat(nodo-C1): WebResearcher DuckDuckGo + Ksoup
+- `7569ad2` — feat(nodo-C2): DeepResearchEngine IterDRAG
+- `cd45d62` — feat(nodo-C3): ResearchViewModel
+- `da2df96` — feat(nodo-C3): ResearchScreen
+- `a1ea7fd` — feat(nodo-C3): FenixNavHost +RESEARCH route
+- `dd81bc0` — feat(nodo-C3): ProjectDetailScreen +Search button
+- `7c97547` — feat(nodo-C1): ToolExecutor +web_search +scrape_content

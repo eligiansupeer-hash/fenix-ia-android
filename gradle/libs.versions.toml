@@ -18,11 +18,10 @@ mockk = "1.13.13"
 apachePoi = "5.3.0"
 commonsCompress = "1.27.1"
 # PdfBox Android — extrae texto nativo de PDFs sin renderizar bitmaps (R-04 compliant)
-# Puerto Android de Apache PDFBox. ~3 MB. Funciona offline, sin servicios de red.
 pdfboxAndroid = "2.0.27.0"
-# ML Kit Text Recognition — OCR para PDFs escaneados (imágenes sin texto embebido)
+# ML Kit Text Recognition — OCR para PDFs escaneados
 mlkitTextRecognition = "16.0.0"
-# Ksoup — parser HTML/CSS puro Kotlin para web scraping (sin WebView, sin DOM)
+# Ksoup — parser HTML puro Kotlin (solo parsing, sin HTTP propio — Ktor hace el HTTP)
 ksoup = "0.1.5"
 
 [libraries]
@@ -30,7 +29,6 @@ ksoup = "0.1.5"
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
 compose-material3 = { group = "androidx.compose.material3", name = "material3" }
-# Material Icons Extended: requerido para Icons.Default.Stop, Delete, etc.
 compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
@@ -47,7 +45,6 @@ hilt-androidx-compiler = { group = "androidx.hilt", name = "hilt-compiler", vers
 # Coroutines
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version = "1.9.0" }
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version = "1.9.0" }
-# coroutines-guava: ListenableFuture.await() — requerido por JavaScriptSandbox API
 coroutines-guava = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-guava", version = "1.9.0" }
 # Room
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
@@ -71,15 +68,16 @@ javascriptengine = { group = "androidx.javascriptengine", name = "javascriptengi
 objectbox-android = { group = "io.objectbox", name = "objectbox-android", version.ref = "objectbox" }
 # TensorFlow Lite
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
-# Apache POI — extracción texto DOCX sin renderizado (R-04 compliant)
+# Apache POI
 apache-poi-ooxml = { group = "org.apache.poi", name = "poi-ooxml", version.ref = "apachePoi" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
-# PdfBox Android — extrae texto nativo del stream PDF (sin renderizar bitmaps)
+# PdfBox Android
 pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
-# ML Kit Text Recognition — OCR real para PDFs escaneados e imágenes JPG/PNG
+# ML Kit
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
-# Ksoup — parser HTML puro Kotlin, con soporte de red via Ktor (sin WebView)
-ksoup = { group = "com.fleeksoft.ksoup", name = "ksoup-network", version.ref = "ksoup" }
+# Ksoup — SOLO el artefacto base "ksoup" (parser HTML puro, sin cliente HTTP propio)
+# El HTTP lo hace Ktor. ksoup-network causa conflictos de dependencias transitivas.
+ksoup = { group = "com.fleeksoft.ksoup", name = "ksoup", version.ref = "ksoup" }
 # Tests
 junit5 = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit5" }
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }

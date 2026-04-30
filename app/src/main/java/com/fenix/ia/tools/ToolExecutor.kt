@@ -4,6 +4,7 @@ import android.content.Context
 import com.fenix.ia.data.local.objectbox.RagEngine
 import com.fenix.ia.domain.model.Tool
 import com.fenix.ia.domain.model.ToolExecutionType
+import com.fenix.ia.research.WebResearcher
 import com.fenix.ia.sandbox.DynamicExecutionEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.json.*
@@ -17,12 +18,19 @@ import javax.inject.Singleton
  *
  * RESTRICCION R-04: read_file usa bufferedReader con maxChars, nunca carga el archivo entero.
  * RESTRICCION R-05: el codigo JS se pasa al sandbox como script separado de los datos.
+ *
+ * Tools implementadas:
+ *   - read_file, create_file           (filesystem)
+ *   - store_knowledge, retrieve_context (RAG / ObjectBox)
+ *   - web_search, scrape_content        (NODO-C1: WebResearcher + Ksoup)
+ *   - run_code                          (JavaScriptSandbox)
  */
 @Singleton
 class ToolExecutor @Inject constructor(
     @ApplicationContext private val context: Context,
     private val ragEngine: RagEngine,
-    private val sandbox: DynamicExecutionEngine
+    private val sandbox: DynamicExecutionEngine,
+    private val webResearcher: WebResearcher          // NODO-C1
 ) {
     suspend fun execute(tool: Tool, argsJson: String): ToolResult {
         val args = try {
@@ -33,7 +41,7 @@ class ToolExecutor @Inject constructor(
 
         return try {
             when (tool.executionType) {
-                ToolExecutionType.JAVASCRIPT -> executeSandbox(tool, args)
+                ToolExecutionType.JAVASCRIPT    -> executeSandbox(tool, args)
                 ToolExecutionType.NATIVE_KOTLIN -> executeNative(tool, args)
                 ToolExecutionType.HTTP_EXTERNAL -> ToolResult.Error(
                     "HTTP_EXTERNAL no implementado en este nodo"
@@ -52,6 +60,8 @@ class ToolExecutor @Inject constructor(
             "create_file"      -> executeCreateFile(args)
             "store_knowledge"  -> executeStoreKnowledge(args)
             "retrieve_context" -> executeRetrieveContext(args)
+            "web_search"       -> executeWebSearch(args)      // NODO-C1
+            "scrape_content"   -> executeScrapeContent(args)  // NODO-C1
             else -> ToolResult.Error(
                 "Tool [${tool.name}] no tiene implementacion nativa en este nodo. " +
                 "Sera despachada por el OrchestratorEngine en fases posteriores."
@@ -62,7 +72,7 @@ class ToolExecutor @Inject constructor(
 
     /** R-04: stream con maxChars — nunca cargar archivo completo en heap. */
     private fun executeReadFile(args: JsonObject): ToolResult {
-        val path    = args["path"]?.jsonPrimitive?.content
+        val path     = args["path"]?.jsonPrimitive?.content
             ?: return ToolResult.Error("Argumento 'path' requerido")
         val maxChars = args["maxChars"]?.jsonPrimitive?.intOrNull ?: 10_000
 
@@ -93,7 +103,7 @@ class ToolExecutor @Inject constructor(
         val projectId = args["projectId"]?.jsonPrimitive?.content
             ?: return ToolResult.Error("Argumento 'projectId' requerido")
 
-        val dir = File(context.filesDir, "projects/$projectId").also { it.mkdirs() }
+        val dir  = File(context.filesDir, "projects/$projectId").also { it.mkdirs() }
         val file = File(dir, fileName)
         file.writeText(content)
 
@@ -111,12 +121,11 @@ class ToolExecutor @Inject constructor(
             ?: return ToolResult.Error("Argumento 'projectId' requerido")
         val tag       = args["tag"]?.jsonPrimitive?.content ?: "manual"
 
-        // chunkSize default 750 segun RagEngine
         val estimatedChunks = (text.split("\\s+".toRegex()).size / 700).coerceAtLeast(1)
         ragEngine.indexDocument(
-            projectId     = projectId.hashCode().toLong(),
+            projectId      = projectId.hashCode().toLong(),
             documentNodeId = "knowledge_${tag}_${System.currentTimeMillis()}",
-            text          = text
+            text           = text
         )
 
         return ToolResult.Success(buildJsonObject {
@@ -139,18 +148,41 @@ class ToolExecutor @Inject constructor(
                 chunks.forEach { chunk ->
                     add(buildJsonObject {
                         put("text",  chunk.textPayload)
-                        put("score", 0.0) // score placeholder hasta MiniLM real
+                        put("score", 0.0)
                     })
                 }
             })
         }.toString())
     }
 
+    // ---- Web tools (NODO-C1) ----
+
+    /**
+     * Búsqueda DuckDuckGo HTML sin API key.
+     * Retorna: {results:[{title, url, snippet}]}
+     */
+    private suspend fun executeWebSearch(args: JsonObject): ToolResult {
+        val query      = args["query"]?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'query' requerido")
+        val maxResults = args["maxResults"]?.jsonPrimitive?.intOrNull ?: 5
+        return webResearcher.search(query, maxResults)
+    }
+
+    /**
+     * Scraping semántico de URL con Ksoup.
+     * Retorna: {title, url, content, truncated}
+     */
+    private suspend fun executeScrapeContent(args: JsonObject): ToolResult {
+        val url         = args["url"]?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'url' requerido")
+        val cssSelector = args["cssSelector"]?.jsonPrimitive?.contentOrNull
+        return webResearcher.scrape(url, cssSelector)
+    }
+
     // ---- Sandbox JS ----
 
     /**
      * R-05: el codigo y los datos viajan separados al sandbox.
-     * El sandbox recibe args como inputJson independiente del script.
      */
     private suspend fun executeSandbox(tool: Tool, args: JsonObject): ToolResult {
         val code = args["code"]?.jsonPrimitive?.content
@@ -168,7 +200,7 @@ class ToolExecutor @Inject constructor(
         } catch (e: SecurityException) {
             ToolResult.Error("PolicyEngine rechazo el script: ${e.message}")
         } catch (e: Exception) {
-            val msg = e.message ?: "Error desconocido en sandbox"
+            val msg       = e.message ?: "Error desconocido en sandbox"
             val isTimeout = msg.contains("timeout", ignoreCase = true)
             ToolResult.Error(
                 message     = if (isTimeout) "Timeout en sandbox (limite 10s)" else msg,

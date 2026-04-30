@@ -9,6 +9,7 @@ import androidx.navigation.navArgument
 import com.fenix.ia.presentation.chat.ChatScreen
 import com.fenix.ia.presentation.projects.ProjectDetailScreen
 import com.fenix.ia.presentation.projects.ProjectListScreen
+import com.fenix.ia.presentation.research.ResearchScreen
 import com.fenix.ia.presentation.settings.SettingsScreen
 import com.fenix.ia.presentation.workflow.WorkflowScreen
 
@@ -18,10 +19,12 @@ object Routes {
     const val CHAT           = "chat/{projectId}/{chatId}"
     const val SETTINGS       = "settings"
     const val WORKFLOW       = "workflow/{projectId}"   // Fase 3 — NODO-B3
+    const val RESEARCH       = "research/{projectId}"  // Fase 4 — NODO-C3
 
     fun projectDetail(projectId: String) = "project/$projectId"
     fun chat(projectId: String, chatId: String) = "chat/$projectId/$chatId"
     fun workflow(projectId: String) = "workflow/$projectId"
+    fun research(projectId: String) = "research/$projectId"
 }
 
 @Composable
@@ -42,10 +45,11 @@ fun FenixNavHost() {
         ) { back ->
             val projectId = back.arguments?.getString("projectId") ?: return@composable
             ProjectDetailScreen(
-                projectId         = projectId,
-                onNavigateToChat  = { navController.navigate(Routes.chat(projectId, it)) },
+                projectId            = projectId,
+                onNavigateToChat     = { navController.navigate(Routes.chat(projectId, it)) },
                 onNavigateToWorkflow = { navController.navigate(Routes.workflow(projectId)) },
-                onBack            = { navController.popBackStack() }
+                onNavigateToResearch = { navController.navigate(Routes.research(projectId)) },
+                onBack               = { navController.popBackStack() }
             )
         }
 
@@ -75,6 +79,17 @@ fun FenixNavHost() {
         ) { back ->
             val projectId = back.arguments?.getString("projectId") ?: return@composable
             WorkflowScreen(
+                projectId = projectId,
+                onBack    = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route     = Routes.RESEARCH,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { back ->
+            val projectId = back.arguments?.getString("projectId") ?: return@composable
+            ResearchScreen(
                 projectId = projectId,
                 onBack    = { navController.popBackStack() }
             )

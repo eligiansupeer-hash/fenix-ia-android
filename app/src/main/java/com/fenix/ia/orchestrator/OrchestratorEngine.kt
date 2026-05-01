@@ -27,8 +27,6 @@ import javax.inject.Singleton
 /**
  * Motor central del sistema de agentes autónomos.
  *
- * CAMBIO PRINCIPAL (nodo-F2): ahora implementa el loop real de tool-use.
- *
  * Flujo por paso:
  *   1. Construir system prompt con herramientas disponibles para el rol
  *   2. Inferencia del agente
@@ -37,8 +35,7 @@ import javax.inject.Singleton
  *   5. Persistir en Blackboard (RagEngine)
  *   6. Emitir StepDone
  *
- * El formato de tool call que el LLM debe producir:
- *
+ * Formato de tool call:
  *   <tool_call>
  *   {"name": "web_search", "args": {"query": "...", "maxResults": 5}}
  *   </tool_call>
@@ -73,7 +70,6 @@ class OrchestratorEngine @Inject constructor(
             - NUNCA incluyas al AUDITOR como paso del plan (es invocado automáticamente)
         """.trimIndent()
 
-        /** Máximas iteraciones del loop tool-use por paso. Evita loops infinitos. */
         private const val MAX_TOOL_ITERATIONS = 6
     }
 
@@ -87,8 +83,15 @@ class OrchestratorEngine @Inject constructor(
 
         emit(OrchestratorEvent.PlanningStarted(goal))
 
-        // Cargar herramientas habilitadas UNA sola vez al inicio del workflow
-        val enabledTools = try { toolRepository.getEnabledTools() } catch (e: Exception) { emptyList() }
+        // Cargar herramientas habilitadas. Si falla, el workflow se cancela con error visible.
+        val enabledTools = try {
+            toolRepository.getEnabledTools()
+        } catch (e: Exception) {
+            emit(OrchestratorEvent.WorkflowFailed(
+                "No se pudo cargar el catálogo de herramientas: ${e.message}"
+            ))
+            return@flow
+        }
 
         val resolvedProvider = provider ?: ApiProvider.GROQ
         val plan = planTask(goal, resolvedProvider)
@@ -104,10 +107,8 @@ class OrchestratorEngine @Inject constructor(
         for (step in plan.steps.sortedBy { it.stepIndex }) {
             emit(OrchestratorEvent.StepStarted(step))
 
-            // Herramientas permitidas para este rol
             val allowedTools = enabledTools.filter { it.name in step.role.allowedTools }
 
-            // Contexto RAG
             val ragCtx = try {
                 ragEngine.search(step.instruction, projectId.hashCode().toLong(), 5)
                     .joinToString("\n---\n") { it.textPayload }
@@ -131,18 +132,16 @@ class OrchestratorEngine @Inject constructor(
                 taskType = step.role.toTaskType()
             )
 
-            // ── LOOP DE TOOL-USE ─────────────────────────────────────────────
             val output = runToolUseLoop(
-                step          = step,
-                initialCtx    = contextBlock,
-                allowedTools  = allowedTools,
-                provider      = agentProvider,
-                onToolCall    = { toolName, argsJson, result ->
+                step         = step,
+                initialCtx   = contextBlock,
+                allowedTools = allowedTools,
+                provider     = agentProvider,
+                onToolCall   = { toolName, argsJson, result ->
                     emit(OrchestratorEvent.ToolExecuted(toolName, argsJson, result))
                 }
             )
 
-            // ── AUDIT ─────────────────────────────────────────────────────────
             val finalOutput = if (step.requiresAudit && output.isNotBlank()) {
                 emit(OrchestratorEvent.AuditStarted(step))
                 val audit = auditOutput(step.instruction, output, agentProvider)
@@ -152,7 +151,6 @@ class OrchestratorEngine @Inject constructor(
                 } else output
             } else output
 
-            // ── BLACKBOARD ───────────────────────────────────────────────────
             if (finalOutput.isNotBlank()) {
                 try {
                     ragEngine.indexDocument(
@@ -174,16 +172,6 @@ class OrchestratorEngine @Inject constructor(
 
     // ── Loop de tool-use ──────────────────────────────────────────────────────
 
-    /**
-     * Ejecuta el agente en un loop hasta que no haya más tool calls o se alcance MAX_TOOL_ITERATIONS.
-     *
-     * Cada iteración:
-     *   1. Llama al LLM con el historial acumulado
-     *   2. Si el output tiene <tool_call> → ejecuta → agrega resultado al historial → repite
-     *   3. Si no hay tool calls → retorna el output final limpio
-     *
-     * @param onToolCall callback para emitir OrchestratorEvent.ToolExecuted (suspend)
-     */
     private suspend fun runToolUseLoop(
         step: WorkflowStep,
         initialCtx: String,
@@ -192,10 +180,8 @@ class OrchestratorEngine @Inject constructor(
         onToolCall: suspend (toolName: String, argsJson: String, result: String) -> Unit
     ): String {
 
-        // System prompt del agente + inyección del catálogo de tools disponibles
         val systemPrompt = buildAgentSystemPrompt(step.role, allowedTools)
 
-        // Historial de mensajes para este paso (crece con cada iteración tool-use)
         val messages = mutableListOf<LlmMessage>(
             LlmMessage("user", buildString {
                 appendLine(step.instruction)
@@ -208,7 +194,7 @@ class OrchestratorEngine @Inject constructor(
 
         var lastOutput = ""
 
-        repeat(MAX_TOOL_ITERATIONS) { iteration ->
+        repeat(MAX_TOOL_ITERATIONS) { _ ->
             var iterOutput = ""
             var inferenceError: String? = null
 
@@ -229,14 +215,11 @@ class OrchestratorEngine @Inject constructor(
                 return lastOutput.ifBlank { iterOutput }
             }
 
-            // ¿Hay tool calls en el output?
             if (!ToolCallParser.hasToolCall(iterOutput)) {
-                // No hay más tool calls — el agente terminó
                 lastOutput = ToolCallParser.stripToolCalls(iterOutput)
                 return lastOutput
             }
 
-            // Parsear y ejecutar todos los tool calls del output
             val toolCalls = ToolCallParser.extractAll(iterOutput)
             val toolResultsBlock = StringBuilder()
 
@@ -259,10 +242,8 @@ class OrchestratorEngine @Inject constructor(
                 toolResultsBlock.appendLine()
             }
 
-            // El texto limpio del output (sin tags) va como turno assistant
             val cleanOutput = ToolCallParser.stripToolCalls(iterOutput)
 
-            // Agregar al historial: respuesta del agente + resultados de tools
             messages.add(LlmMessage("assistant", iterOutput))
             messages.add(LlmMessage("user",
                 "Resultados de las herramientas ejecutadas:\n\n$toolResultsBlock\n" +
@@ -272,22 +253,11 @@ class OrchestratorEngine @Inject constructor(
             lastOutput = cleanOutput
         }
 
-        // Se alcanzó MAX_TOOL_ITERATIONS — retornar lo último acumulado
         return lastOutput
     }
 
-    // ── Construcción del system prompt con tools ──────────────────────────────
+    // ── System prompt con tools ───────────────────────────────────────────────
 
-    /**
-     * Inyecta el catálogo de herramientas disponibles en el system prompt del agente.
-     *
-     * Formato que entienden todos los LLMs (Groq/OpenAI/Anthropic/Gemini):
-     *
-     *   Para usar una herramienta, responde con:
-     *   <tool_call>
-     *   {"name": "nombre_tool", "args": { ...argumentos según el schema... }}
-     *   </tool_call>
-     */
     private fun buildAgentSystemPrompt(role: AgentRole, tools: List<Tool>): String {
         if (tools.isEmpty()) return role.systemPrompt
 
@@ -317,7 +287,7 @@ class OrchestratorEngine @Inject constructor(
         }
     }
 
-    // ── Planificación ──────────────────────────────────────────────────────────
+    // ── Planificación ─────────────────────────────────────────────────────────
 
     private suspend fun planTask(goal: String, provider: ApiProvider): WorkflowPlan {
         var json = ""
@@ -360,7 +330,7 @@ class OrchestratorEngine @Inject constructor(
         }
     }
 
-    // ── Auditoría ──────────────────────────────────────────────────────────────
+    // ── Auditoría ─────────────────────────────────────────────────────────────
 
     private data class AuditResult(val approved: Boolean, val issues: List<String>, val correctedOutput: String?)
 
@@ -386,7 +356,7 @@ class OrchestratorEngine @Inject constructor(
         }
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun AgentRole.toTaskType(): TaskType = when (this) {
         AgentRole.PROGRAMADOR  -> TaskType.CODE_GENERATION

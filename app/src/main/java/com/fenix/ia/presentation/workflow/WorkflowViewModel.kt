@@ -80,13 +80,14 @@ data class WorkflowUiState(
 
 /** Texto legible para mostrar cada evento en la lista de log. */
 fun OrchestratorEvent.toDisplayString(): String = when (this) {
-    is OrchestratorEvent.PlanningStarted  -> "🧠 Planificando: $goal"
-    is OrchestratorEvent.PlanReady        -> "📋 Plan listo: ${plan.steps.size} pasos"
-    is OrchestratorEvent.StepStarted      -> "▶ Paso ${step.stepIndex + 1} — ${step.role.displayName}"
-    is OrchestratorEvent.StepDone         -> "✅ Paso ${step.stepIndex + 1} completado"
-    is OrchestratorEvent.StepError        -> "⚠️ Error en paso ${step.stepIndex + 1}: $error"
-    is OrchestratorEvent.AuditStarted     -> "🔍 Auditando paso ${step.stepIndex + 1}..."
-    is OrchestratorEvent.AuditCorrected   -> "✏️ Auditor aplicó ${issues.size} corrección(es)"
-    is OrchestratorEvent.WorkflowDone     -> "🎉 Workflow completado"
-    is OrchestratorEvent.WorkflowFailed   -> "❌ Workflow fallido: $reason"
+    is OrchestratorEvent.PlanningStarted -> "🧠 Planificando: $goal"
+    is OrchestratorEvent.PlanReady       -> "📋 Plan listo: ${plan.steps.size} pasos"
+    is OrchestratorEvent.StepStarted     -> "▶ Paso ${step.stepIndex + 1} — ${step.role.displayName}"
+    is OrchestratorEvent.StepDone        -> "✅ Paso ${step.stepIndex + 1} completado"
+    is OrchestratorEvent.StepError       -> "⚠️ Error en paso ${step.stepIndex + 1}: $error"
+    is OrchestratorEvent.AuditStarted    -> "🔍 Auditando paso ${step.stepIndex + 1}..."
+    is OrchestratorEvent.AuditCorrected  -> "✏️ Auditor aplicó ${issues.size} corrección(es)"
+    is OrchestratorEvent.ToolExecuted    -> "🔧 Herramienta: $toolName → ${resultJson.take(60)}…"
+    is OrchestratorEvent.WorkflowDone    -> "🎉 Workflow completado"
+    is OrchestratorEvent.WorkflowFailed  -> "❌ Workflow fallido: $reason"
 }

@@ -37,6 +37,7 @@ compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }
 # Arch
 lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version = "2.8.7" }
+lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version = "2.8.7" }
 navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version = "2.8.4" }
 # Hilt
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
@@ -78,7 +79,6 @@ pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref
 # ML Kit
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 # Ksoup — SOLO el artefacto base "ksoup" (parser HTML puro, sin cliente HTTP propio)
-# El HTTP lo hace Ktor. ksoup-network causa conflictos de dependencias transitivas.
 ksoup = { group = "com.fleeksoft.ksoup", name = "ksoup", version.ref = "ksoup" }
 # MediaPipe LLM Inference — inferencia on-device (Llama 3.2 1B Q4, >= 4GB RAM)
 mediapipe-genai = { module = "com.google.mediapipe:tasks-genai", version.ref = "mediapipe" }

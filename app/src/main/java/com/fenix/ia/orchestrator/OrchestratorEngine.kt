@@ -12,6 +12,7 @@ import com.fenix.ia.domain.model.WorkflowPlan
 import com.fenix.ia.domain.model.WorkflowStep
 import com.fenix.ia.domain.model.WorkflowStatus
 import com.fenix.ia.domain.repository.ToolRepository
+import com.fenix.ia.sandbox.DynamicExecutionEngine
 import com.fenix.ia.tools.ToolCallParser
 import com.fenix.ia.tools.ToolExecutor
 import com.fenix.ia.tools.ToolResult
@@ -35,6 +36,10 @@ import javax.inject.Singleton
  *   5. Persistir en Blackboard (RagEngine)
  *   6. Emitir StepDone
  *
+ * FASE 3 — Sandbox persistente:
+ *   Al finalizar el workflow (éxito o fallo) se invoca dynamicExecutionEngine.releaseSandbox()
+ *   para liberar el proceso IPC de JavaScriptSandbox y devolver memoria al sistema.
+ *
  * Formato de tool call:
  *   <tool_call>
  *   {"name": "web_search", "args": {"query": "...", "maxResults": 5}}
@@ -45,7 +50,8 @@ class OrchestratorEngine @Inject constructor(
     private val llmRouter: LlmInferenceRouter,
     private val ragEngine: RagEngine,
     private val toolExecutor: ToolExecutor,
-    private val toolRepository: ToolRepository
+    private val toolRepository: ToolRepository,
+    private val dynamicExecutionEngine: DynamicExecutionEngine
 ) {
     companion object {
         private val PLANNER_PROMPT = """
@@ -90,6 +96,7 @@ class OrchestratorEngine @Inject constructor(
             emit(OrchestratorEvent.WorkflowFailed(
                 "No se pudo cargar el catálogo de herramientas: ${e.message}"
             ))
+            dynamicExecutionEngine.releaseSandbox()
             return@flow
         }
 
@@ -99,6 +106,7 @@ class OrchestratorEngine @Inject constructor(
 
         if (plan.steps.isEmpty()) {
             emit(OrchestratorEvent.WorkflowFailed("El planificador no generó ningún paso"))
+            dynamicExecutionEngine.releaseSandbox()
             return@flow
         }
 
@@ -167,6 +175,10 @@ class OrchestratorEngine @Inject constructor(
         val lastIndex   = plan.steps.maxOf { it.stepIndex }
         val finalOutput = blackboard[lastIndex] ?: ""
         emit(OrchestratorEvent.WorkflowDone(finalOutput))
+
+        // FASE 3 — Liberar sandbox IPC al concluir el workflow.
+        // El sandbox se recreará en la próxima ejecución JavaScript si es necesario.
+        dynamicExecutionEngine.releaseSandbox()
 
     }.flowOn(Dispatchers.IO)
 

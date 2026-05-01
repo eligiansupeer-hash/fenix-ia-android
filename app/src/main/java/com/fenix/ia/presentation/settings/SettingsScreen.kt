@@ -108,14 +108,17 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
 
-            ApiProvider.values().forEach { provider ->
-                ApiKeyField(
-                    provider = provider,
-                    isConfigured = provider in uiState.configuredProviders,
-                    onSave = { key -> viewModel.saveKey(provider, key) },
-                    onDelete = { viewModel.deleteKey(provider) }
-                )
-            }
+            // LOCAL_ON_DEVICE se excluye — no requiere API key
+            ApiProvider.values()
+                .filter { it != ApiProvider.LOCAL_ON_DEVICE }
+                .forEach { provider ->
+                    ApiKeyField(
+                        provider = provider,
+                        isConfigured = provider in uiState.configuredProviders,
+                        onSave = { key -> viewModel.saveKey(provider, key) },
+                        onDelete = { viewModel.deleteKey(provider) }
+                    )
+                }
 
             Spacer(modifier = Modifier.height(32.dp))
         }
@@ -164,7 +167,7 @@ private fun LocalAiSection(
             }
 
             Text(
-                "Llama 3.2 1B Q4  ·  ~700 MB  ·  Offline total  ·  Privacidad completa",
+                "Gemma 2B Q4  ·  ~1.5 GB  ·  Offline total  ·  Privacidad completa",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -219,7 +222,7 @@ private fun LocalAiSection(
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Descargar modelo (~700 MB)")
+                        Text("Descargar modelo (~1.5 GB)")
                     }
                 }
             }

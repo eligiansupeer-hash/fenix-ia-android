@@ -2,6 +2,7 @@ package com.fenix.ia.data.remote
 
 import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.domain.repository.ApiKeyRepository
+import com.fenix.ia.local.LocalLlmEngine
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -20,6 +21,7 @@ import javax.inject.Singleton
 
 /**
  * Enrutador multi-proveedor con streaming SSE y fallback automático.
+ * Soporta LOCAL_ON_DEVICE — cortocircuita toda la lógica cloud y delega a LocalLlmEngine.
  *
  * FORMATOS DE API:
  *
@@ -34,26 +36,23 @@ import javax.inject.Singleton
  *   roles → "user" / "model"        (NO "assistant", NO "system" en contents)
  *   endpoint → .../gemini-2.0-flash:streamGenerateContent?alt=sse
  *
- * FALLBACK AUTOMÁTICO:
- *   Si el proveedor elegido no tiene API key configurada, el router busca
- *   automáticamente el siguiente proveedor disponible en el orden de prioridad.
- *   Si ninguno está configurado, emite StreamEvent.Error con mensaje descriptivo.
- *
- * CONTEXT WINDOW AWARE:
- *   selectProvider() elige el proveedor con suficiente context window para
- *   los tokens estimados. Si el proveedor elegido no está configurado, hace
- *   fallback al siguiente que sí lo esté Y tenga context window suficiente.
+ * LOCAL_ON_DEVICE:
+ *   No usa red. Construye prompt plano y delega a LocalLlmEngine.generate().
+ *   Context window limitado (~4096 tokens) — se trunca system prompt y se toman últimos 6 mensajes.
  */
 @Singleton
 class LlmInferenceRouter @Inject constructor(
     private val httpClient: HttpClient,
-    private val apiKeyRepository: ApiKeyRepository
+    private val apiKeyRepository: ApiKeyRepository,
+    private val localLlmEngine: LocalLlmEngine   // IA on-device
 ) {
     companion object {
         private const val MAX_RETRY_ATTEMPTS = 3
-        private const val SSE_LINE_LIMIT = 1024 * 1024  // 1MB por línea SSE
+        private const val SSE_LINE_LIMIT = 1024 * 1024  // 1 MB por línea SSE
+        private const val LOCAL_MAX_SYSTEM_CHARS = 2000  // reservar espacio para historial
 
-        // Context window aproximado de cada proveedor (en tokens)
+        // Context window aproximado de cada proveedor cloud (en tokens)
+        // LOCAL_ON_DEVICE NO va aquí — tiene su propia lógica
         private val PROVIDER_CONTEXT_WINDOW = mapOf(
             ApiProvider.GEMINI        to 1_000_000,
             ApiProvider.GROQ          to 128_000,
@@ -62,7 +61,8 @@ class LlmInferenceRouter @Inject constructor(
             ApiProvider.GITHUB_MODELS to 128_000
         )
 
-        // Orden de preferencia para fallback cuando el elegido no está configurado
+        // Orden de preferencia para fallback cloud
+        // LOCAL_ON_DEVICE NO va aquí — no tiene API key ni fallback cloud
         private val FALLBACK_ORDER = listOf(
             ApiProvider.GROQ,
             ApiProvider.GEMINI,
@@ -73,21 +73,19 @@ class LlmInferenceRouter @Inject constructor(
     }
 
     /**
-     * Elige el proveedor más adecuado para la tarea.
-     * NO verifica si la key está configurada — eso lo hace streamCompletion con fallback.
+     * Elige el proveedor cloud más adecuado para la tarea.
+     * NO incluye LOCAL_ON_DEVICE — ese se selecciona explícitamente por el usuario.
      */
     fun selectProvider(
         estimatedTokens: Int,
         taskType: TaskType,
         preferredProvider: ApiProvider? = null
     ): ApiProvider {
-        if (preferredProvider != null) return preferredProvider
+        if (preferredProvider != null && preferredProvider != ApiProvider.LOCAL_ON_DEVICE)
+            return preferredProvider
         return when {
-            // Docs muy largos → Gemini (1M context window)
             estimatedTokens > 60_000 -> ApiProvider.GEMINI
-            // Code → Mistral (mejor en razonamiento de código)
             taskType == TaskType.CODE_GENERATION -> ApiProvider.MISTRAL
-            // Default → Groq (más rápido para chat)
             else -> ApiProvider.GROQ
         }
     }
@@ -100,13 +98,28 @@ class LlmInferenceRouter @Inject constructor(
         temperature: Float = 0.7f
     ): Flow<StreamEvent> = flow {
 
-        // Busca el primer proveedor disponible: el elegido primero, luego fallbacks
+        // ── Rama LOCAL — cortocircuito antes de cualquier lógica de API keys ──
+        if (provider == ApiProvider.LOCAL_ON_DEVICE) {
+            if (!localLlmEngine.isReady.value) {
+                emit(StreamEvent.Error(
+                    "El modelo local no está activo. Activalo en Configuración → IA Local."
+                ))
+                return@flow
+            }
+            val prompt = buildLocalPrompt(messages, systemPrompt)
+            localLlmEngine.generate(prompt).collect { chunk ->
+                emit(StreamEvent.Token(chunk))
+            }
+            emit(StreamEvent.Done)
+            return@flow
+        }
+
+        // ── Rama CLOUD ────────────────────────────────────────────────────────
         val configuredProviders = apiKeyRepository.getConfiguredProviders().first()
 
         val resolvedProvider = if (provider in configuredProviders) {
             provider
         } else {
-            // Fallback: busca el primero configurado con context window suficiente
             val estimatedTokens = estimatePromptTokens(messages, systemPrompt)
             val fallback = FALLBACK_ORDER.firstOrNull { candidate ->
                 candidate in configuredProviders &&
@@ -120,10 +133,7 @@ class LlmInferenceRouter @Inject constructor(
                 ))
                 return@flow
             }
-
-            if (fallback != provider) {
-                emit(StreamEvent.ProviderFallback(provider, fallback))
-            }
+            if (fallback != provider) emit(StreamEvent.ProviderFallback(provider, fallback))
             fallback
         }
 
@@ -133,7 +143,7 @@ class LlmInferenceRouter @Inject constructor(
                 return@flow
             }
 
-        val endpoint = getEndpoint(resolvedProvider)
+        val endpoint    = getEndpoint(resolvedProvider)
         val actualModel = model ?: getDefaultModel(resolvedProvider)
 
         val requestBody = if (resolvedProvider == ApiProvider.GEMINI) {
@@ -161,7 +171,6 @@ class LlmInferenceRouter @Inject constructor(
 
                     when (response.status.value) {
                         429 -> {
-                            // Rate limit → fallback al siguiente proveedor disponible
                             val nextProvider = FALLBACK_ORDER
                                 .filter { it != resolvedProvider && it in configuredProviders }
                                 .firstOrNull()
@@ -170,7 +179,7 @@ class LlmInferenceRouter @Inject constructor(
                             } else {
                                 emit(StreamEvent.Error("Rate limit alcanzado en $resolvedProvider y no hay fallback disponible."))
                             }
-                            success = true  // No reintentamos sobre rate limit
+                            success = true
                             return@execute
                         }
                         401, 403 -> {
@@ -200,7 +209,6 @@ class LlmInferenceRouter @Inject constructor(
                             }
                         }
                     }
-                    // Gemini cierra el stream sin [DONE]
                     if (!success && channel.isClosedForRead) {
                         emit(StreamEvent.Done)
                         success = true
@@ -210,11 +218,41 @@ class LlmInferenceRouter @Inject constructor(
                 if (attempt >= MAX_RETRY_ATTEMPTS) {
                     emit(StreamEvent.Error("Conexión fallida tras $MAX_RETRY_ATTEMPTS intentos: ${e.message}"))
                 } else {
-                    delay(1000L * attempt)  // backoff exponencial
+                    delay(1000L * attempt)
                 }
             }
         }
     }.flowOn(Dispatchers.IO)
+
+    // ── Prompt para modelo local ──────────────────────────────────────────────
+
+    /**
+     * Construye un prompt plano para el modelo local.
+     * Limita el system prompt a LOCAL_MAX_SYSTEM_CHARS y toma los últimos 6 mensajes
+     * para no exceder el context window de ~4096 tokens de Gemma 2B.
+     */
+    private fun buildLocalPrompt(messages: List<LlmMessage>, systemPrompt: String): String {
+        val truncatedSystem = if (systemPrompt.length > LOCAL_MAX_SYSTEM_CHARS)
+            systemPrompt.take(LOCAL_MAX_SYSTEM_CHARS) + "\n[...sistema truncado por límite de contexto...]"
+        else systemPrompt
+
+        return buildString {
+            if (truncatedSystem.isNotBlank()) {
+                appendLine("<system>")
+                appendLine(truncatedSystem)
+                appendLine("</system>")
+                appendLine()
+            }
+            messages.takeLast(6).forEach { msg ->
+                when (msg.role) {
+                    "user"      -> appendLine("Usuario: ${msg.content}")
+                    "assistant" -> appendLine("Asistente: ${msg.content}")
+                    // "system" ya incluido arriba
+                }
+            }
+            append("Asistente:")
+        }
+    }
 
     // ── Builders de request body ──────────────────────────────────────────────
 
@@ -243,14 +281,6 @@ class LlmInferenceRouter @Inject constructor(
         })
     }
 
-    /**
-     * Formato Gemini:
-     * - systemInstruction: campo separado, NO dentro de contents
-     * - contents: solo mensajes "user" y "model"
-     * - roles: "model" en lugar de "assistant"
-     * - generationConfig: temperatura y límite de tokens de salida
-     * - NO incluye "stream" en el body (el streaming se activa con ?alt=sse en la URL)
-     */
     private fun buildGeminiRequestBody(
         messages: List<LlmMessage>,
         systemPrompt: String,
@@ -265,8 +295,6 @@ class LlmInferenceRouter @Inject constructor(
                 }
             }
             putJsonArray("contents") {
-                // Gemini requiere que roles alternén user/model y empiecen con user
-                // Filtramos mensajes system del historial (ya van en systemInstruction)
                 messages.filter { it.role != "system" }.forEach { msg ->
                     addJsonObject {
                         put("role", if (msg.role == "assistant") "model" else msg.role)
@@ -328,21 +356,25 @@ class LlmInferenceRouter @Inject constructor(
             "https://openrouter.ai/api/v1/chat/completions"
         ApiProvider.GITHUB_MODELS ->
             "https://models.inference.ai.azure.com/chat/completions"
+        ApiProvider.LOCAL_ON_DEVICE ->
+            ""  // no usa red — manejado antes del switch
     }
 
     internal fun getDefaultModel(provider: ApiProvider): String = when (provider) {
-        ApiProvider.GEMINI        -> "gemini-2.0-flash"
-        ApiProvider.GROQ          -> "llama-3.3-70b-versatile"
-        ApiProvider.MISTRAL       -> "mistral-large-latest"
-        ApiProvider.OPENROUTER    -> "meta-llama/llama-3.3-70b-instruct:free"
-        ApiProvider.GITHUB_MODELS -> "gpt-4o"
+        ApiProvider.GEMINI          -> "gemini-2.0-flash"
+        ApiProvider.GROQ            -> "llama-3.3-70b-versatile"
+        ApiProvider.MISTRAL         -> "mistral-large-latest"
+        ApiProvider.OPENROUTER      -> "meta-llama/llama-3.3-70b-instruct:free"
+        ApiProvider.GITHUB_MODELS   -> "gpt-4o"
+        ApiProvider.LOCAL_ON_DEVICE -> ""  // no aplica
     }
 
     internal fun getFallback(provider: ApiProvider): ApiProvider = when (provider) {
-        ApiProvider.GEMINI        -> ApiProvider.OPENROUTER
-        ApiProvider.GROQ          -> ApiProvider.OPENROUTER
-        ApiProvider.MISTRAL       -> ApiProvider.GITHUB_MODELS
-        ApiProvider.OPENROUTER    -> ApiProvider.GROQ
-        ApiProvider.GITHUB_MODELS -> ApiProvider.OPENROUTER
+        ApiProvider.GEMINI          -> ApiProvider.OPENROUTER
+        ApiProvider.GROQ            -> ApiProvider.OPENROUTER
+        ApiProvider.MISTRAL         -> ApiProvider.GITHUB_MODELS
+        ApiProvider.OPENROUTER      -> ApiProvider.GROQ
+        ApiProvider.GITHUB_MODELS   -> ApiProvider.OPENROUTER
+        ApiProvider.LOCAL_ON_DEVICE -> ApiProvider.GROQ
     }
 }

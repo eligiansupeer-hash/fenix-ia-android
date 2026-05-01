@@ -6,8 +6,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,7 +15,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.Tool
 import com.fenix.ia.domain.model.ToolExecutionType
-import com.fenix.ia.tools.ToolResult
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,8 +25,6 @@ fun ToolsScreen(
 ) {
     val state by vm.uiState.collectAsState()
     var showCreate by remember { mutableStateOf(false) }
-    var testingTool by remember { mutableStateOf<Tool?>(null) }
-    var testQuery by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) { vm.loadTools() }
 
@@ -55,7 +50,7 @@ fun ToolsScreen(
         ) {
             item {
                 Text(
-                    "Las herramientas son usadas automáticamente por los agentes de IA.",
+                    "Catálogo global — las herramientas son invocadas automáticamente por los agentes de IA.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
@@ -64,120 +59,10 @@ fun ToolsScreen(
             items(state.tools, key = { it.id }) { tool ->
                 ToolCard(
                     tool     = tool,
-                    onToggle = { vm.toggle(tool) },
-                    onTest   = {
-                        testingTool = tool
-                        testQuery = ""
-                    }
+                    onToggle = { vm.toggle(tool) }
                 )
             }
         }
-    }
-
-    // ── Diálogo de prueba — lenguaje natural, sin JSON ──────────────────────
-    testingTool?.let { tool ->
-        AlertDialog(
-            onDismissRequest = { testingTool = null; vm.clearResult() },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Probar: ")
-                    Text(
-                        tool.name,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-            },
-            text = {
-                Column {
-                    // Descripción legible — no el schema crudo
-                    Text(
-                        tool.description,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Tipo: ${tool.executionType.label}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    // Input en lenguaje natural
-                    OutlinedTextField(
-                        value = testQuery,
-                        onValueChange = { testQuery = it },
-                        label = { Text(tool.examplePrompt) },
-                        modifier = Modifier.fillMaxWidth(),
-                        maxLines = 3,
-                        placeholder = { Text(tool.exampleInput, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)) }
-                    )
-
-                    // Resultado
-                    if (state.isExecuting) {
-                        Spacer(Modifier.height(12.dp))
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Text("Ejecutando...", style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    state.lastResult?.let { result ->
-                        Spacer(Modifier.height(12.dp))
-                        HorizontalDivider()
-                        Spacer(Modifier.height(8.dp))
-                        when (result) {
-                            is ToolResult.Success -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Resultado:", style = MaterialTheme.typography.labelMedium)
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    result.outputJson.take(400),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            is ToolResult.Error -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Error,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        result.message,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                }
-                            }
-                            else -> {}
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { vm.executeNatural(tool, testQuery, projectId) },
-                    enabled = testQuery.isNotBlank() && !state.isExecuting
-                ) {
-                    Text("Ejecutar")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { testingTool = null; vm.clearResult() }) {
-                    Text("Cerrar")
-                }
-            }
-        )
     }
 
     // ── Diálogo crear herramienta con IA ────────────────────────────────────
@@ -250,10 +135,10 @@ fun ToolsScreen(
     }
 }
 
-// ── ToolCard ─────────────────────────────────────────────────────────────────
+// ── ToolCard — solo toggle, sin "Probar" ─────────────────────────────────────
 
 @Composable
-private fun ToolCard(tool: Tool, onToggle: () -> Unit, onTest: () -> Unit) {
+private fun ToolCard(tool: Tool, onToggle: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(12.dp),
@@ -287,51 +172,17 @@ private fun ToolCard(tool: Tool, onToggle: () -> Unit, onTest: () -> Unit) {
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Switch(checked = tool.isEnabled, onCheckedChange = { onToggle() })
-                TextButton(onClick = onTest, enabled = tool.isEnabled) {
-                    Text("Probar")
-                }
-            }
+            // Solo el toggle — la IA invoca las tools, el usuario solo activa/desactiva
+            Switch(checked = tool.isEnabled, onCheckedChange = { onToggle() })
         }
     }
 }
 
-// ── Extensiones de UI sobre el dominio ───────────────────────────────────────
+// ── Extension — label legible para el tipo de ejecución ──────────────────────
 
-/** Label legible para el tipo de ejecución. */
-val ToolExecutionType.label: String get() = when (this) {
-    ToolExecutionType.NATIVE_KOTLIN -> "Kotlin nativo"
-    ToolExecutionType.JAVASCRIPT    -> "JavaScript sandbox"
-    ToolExecutionType.HTTP_EXTERNAL -> "HTTP externo"
-}
-
-/** Placeholder de input adaptado a cada tool. */
-val Tool.exampleInput: String get() = when (name) {
-    "web_search"       -> "inteligencia artificial educación"
-    "scrape_content"   -> "https://ejemplo.com"
-    "summarize"        -> "Pegá acá el texto a resumir..."
-    "translate"        -> "Hello, how are you? → español"
-    "read_file"        -> "/sdcard/Download/documento.txt"
-    "create_file"      -> "Mi nota importante"
-    "store_knowledge"  -> "Concepto importante a recordar"
-    "retrieve_context" -> "¿Qué sé sobre machine learning?"
-    "run_code"         -> "return JSON.stringify({resultado: 42})"
-    "deep_research"    -> "impacto de la IA en el trabajo"
-    else               -> "Ingresá los datos..."
-}
-
-/** Etiqueta del campo de input adaptada a cada tool. */
-val Tool.examplePrompt: String get() = when (name) {
-    "web_search"       -> "¿Qué querés buscar?"
-    "scrape_content"   -> "URL de la página"
-    "summarize"        -> "Texto a resumir"
-    "translate"        -> "Texto y idioma destino"
-    "read_file"        -> "Ruta del archivo"
-    "create_file"      -> "Contenido del archivo"
-    "store_knowledge"  -> "Conocimiento a guardar"
-    "retrieve_context" -> "¿Qué querés recordar?"
-    "run_code"         -> "Código JavaScript ES6"
-    "deep_research"    -> "Tema a investigar"
-    else               -> "Datos de entrada"
-}
+val ToolExecutionType.label: String
+    get() = when (this) {
+        ToolExecutionType.NATIVE_KOTLIN -> "Kotlin nativo"
+        ToolExecutionType.JAVASCRIPT    -> "JavaScript sandbox"
+        ToolExecutionType.HTTP_EXTERNAL -> "HTTP externo"
+    }

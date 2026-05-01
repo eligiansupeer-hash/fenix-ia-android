@@ -11,11 +11,11 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -31,22 +31,25 @@ import javax.inject.Singleton
  * - R-01: No bloquea Main thread (todo en Dispatchers.IO / Dispatchers.Default)
  * - R-04: No carga el modelo completo en heap Java — MediaPipe gestiona su propia memoria nativa
  * - minSdk = 26 compatible con MediaPipe 0.10.14
+ *
+ * FASE 5 — Streaming genuino:
+ *   Eliminado generateResponse() síncrono + chunked/delay artificial.
+ *   generate() usa callbackFlow con generateResponseAsync() + PartialResultListener nativo,
+ *   emitiendo tokens reales tan pronto MediaPipe los produce.
  */
 @Singleton
 class LocalLlmEngine @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val httpClient: HttpClient   // Ktor — maneja redirects HTTPS correctamente
+    private val httpClient: HttpClient
 ) {
     companion object {
         const val MODEL_DIR  = "fenix_models"
-        const val MODEL_FILE = "gemma_2b_q4.bin"  // modelo oficial Google/MediaPipe
+        const val MODEL_FILE = "gemma_2b_q4.bin"
         const val MIN_RAM_MB = 3_500L
-        private const val MAX_TOKENS           = 1024
-        private const val TOP_K                = 40
-        private const val TEMPERATURE          = 0.8f
-        private const val STREAMING_CHUNK_SIZE = 10
-        private const val STREAMING_DELAY_MS   = 15L
-        private const val MIN_VALID_FILE_BYTES = 1_000_000L  // 1 MB mínimo para descartar redirects HTML
+        private const val MAX_TOKENS  = 1024
+        private const val TOP_K       = 40
+        private const val TEMPERATURE = 0.8f
+        private const val MIN_VALID_FILE_BYTES = 1_000_000L
     }
 
     private var inference: LlmInference? = null
@@ -90,27 +93,34 @@ class LocalLlmEngine @Inject constructor(
     }
 
     /**
-     * Genera una respuesta para el prompt dado, simulando streaming en chunks.
-     * Si el modelo no está inicializado emite un mensaje de error en el Flow.
+     * FASE 5 — Streaming genuino via callbackFlow + generateResponseAsync().
+     *
+     * PartialResultListener recibe (partialResult: String?, done: Boolean).
+     * Cada token parcial se envía al Flow de inmediato con trySend().
+     * Cuando done=true se cierra el canal.
+     * awaitClose cancela la inferencia si el collector cancela el Flow.
+     *
+     * Contrato con ChatViewModel:
+     * - Mismo Flow<String> que el streaming SSE remoto.
+     * - Primer token llega en 1–3 s de inferencia real.
+     * - No hay hilos bloqueados en el pool por operaciones C++.
      */
-    fun generate(prompt: String): Flow<String> = flow {
+    fun generate(prompt: String): Flow<String> = callbackFlow {
         val model = inference
         if (model == null) {
-            emit("[Error: modelo local no inicializado]")
-            return@flow
+            trySend("[Error: modelo local no inicializado]")
+            close()
+            return@callbackFlow
         }
-        val response = withContext(Dispatchers.Default) {
-            model.generateResponse(prompt)
+        model.generateResponseAsync(prompt) { partialResult, done ->
+            partialResult?.let { trySend(it) }
+            if (done) close()
         }
-        response.chunked(STREAMING_CHUNK_SIZE).forEach { chunk ->
-            emit(chunk)
-            delay(STREAMING_DELAY_MS)
-        }
+        awaitClose { model.cancel() }
     }.flowOn(Dispatchers.Default)
 
     /**
-     * Descarga el modelo usando Ktor HttpClient — sigue redirects HTTPS→HTTPS correctamente
-     * (HttpURLConnection puro NO lo hace cuando el dominio cambia).
+     * Descarga el modelo usando Ktor HttpClient.
      * Reporta progreso real [0..1] via onProgress.
      * Usa archivo .tmp para evitar que un archivo parcial quede como "descargado".
      *
@@ -125,10 +135,7 @@ class LocalLlmEngine @Inject constructor(
         val tmpFile  = File(destDir, "$MODEL_FILE.tmp")
         try {
             httpClient.prepareGet(url).execute { response ->
-                // isSuccess() es extensión de io.ktor.http sobre HttpStatusCode
                 if (!response.status.isSuccess()) return@execute
-                // contentLength() no existe como extensión directa en HttpResponse en Ktor 2.x;
-                // se lee del header Content-Length
                 val totalBytes = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
                 var downloaded = 0L
                 val channel = response.bodyAsChannel()
@@ -144,7 +151,6 @@ class LocalLlmEngine @Inject constructor(
                     }
                 }
             }
-            // Validar que no se haya descargado el HTML del redirect (200 bytes)
             if (tmpFile.exists() && tmpFile.length() > MIN_VALID_FILE_BYTES) {
                 tmpFile.renameTo(destFile)
                 true

@@ -14,7 +14,6 @@ data class SettingsUiState(
     val configuredProviders: List<ApiProvider> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
-    // IA Local (Fase 5)
     val isLocalCapable: Boolean = false,
     val isModelDownloaded: Boolean = false,
     val isModelReady: Boolean = false,
@@ -32,25 +31,20 @@ class SettingsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
-    // Modelo oficial Google compatible con MediaPipe LlmInference (GPU int4, ~1.5 GB)
-    // URL pública sin autenticación — sin redirects de dominio cruzado
     private val MODEL_DOWNLOAD_URL =
         "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma-2b-it-gpu-int4/float32/1/gemma-2b-it-gpu-int4.bin"
 
     init {
-        // Providers configurados (excluye LOCAL_ON_DEVICE — no tiene API key)
         viewModelScope.launch {
             apiKeyRepository.getConfiguredProviders().collect { providers ->
                 _uiState.update { it.copy(configuredProviders = providers) }
             }
         }
-        // Estado de IA Local
         viewModelScope.launch {
             val capable    = localLlmEngine.isCapable()
             val downloaded = localLlmEngine.isModelDownloaded()
             _uiState.update { it.copy(isLocalCapable = capable, isModelDownloaded = downloaded) }
         }
-        // Observar isReady en tiempo real
         viewModelScope.launch {
             localLlmEngine.isReady.collect { ready ->
                 _uiState.update { it.copy(isModelReady = ready) }
@@ -74,7 +68,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** Descarga el modelo Gemma 2B Q4 desde storage.googleapis.com (~1.5 GB). */
     fun downloadModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(isDownloading = true, downloadProgress = 0f, localError = null) }
@@ -93,7 +86,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** Inicializa el modelo descargado en memoria nativa (MediaPipe). */
     fun activateModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(localError = null) }
@@ -106,13 +98,17 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** Libera el modelo de la memoria nativa para reducir RAM. */
+    /**
+     * Libera el modelo explícitamente (usuario desactiva IA Local).
+     * El ciclo de vida (onStop) también lo libera automáticamente al ir a background.
+     */
     fun releaseModel() {
         localLlmEngine.release()
     }
 
     override fun onCleared() {
         super.onCleared()
-        // No liberamos el modelo al salir de Settings — sigue activo en otras pantallas
+        // El ciclo de vida del modelo es gestionado por ProcessLifecycleOwner en LocalLlmEngine.
+        // No se libera aquí para que el modelo siga activo en otras pantallas de la app.
     }
 }

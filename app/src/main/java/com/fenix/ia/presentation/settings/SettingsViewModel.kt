@@ -32,12 +32,13 @@ class SettingsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
-    // URL del modelo en GitHub Releases (se puede actualizar vía OTA)
+    // Modelo oficial Google compatible con MediaPipe LlmInference (GPU int4, ~1.5 GB)
+    // URL pública sin autenticación — sin redirects de dominio cruzado
     private val MODEL_DOWNLOAD_URL =
-        "https://github.com/eligiansupeer-hash/fenix-ia-android/releases/download/model-v1/llama3_2_1b_q4.task"
+        "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma-2b-it-gpu-int4/float32/1/gemma-2b-it-gpu-int4.bin"
 
     init {
-        // Providers configurados
+        // Providers configurados (excluye LOCAL_ON_DEVICE — no tiene API key)
         viewModelScope.launch {
             apiKeyRepository.getConfiguredProviders().collect { providers ->
                 _uiState.update { it.copy(configuredProviders = providers) }
@@ -45,14 +46,9 @@ class SettingsViewModel @Inject constructor(
         }
         // Estado de IA Local
         viewModelScope.launch {
-            val capable = localLlmEngine.isCapable()
+            val capable    = localLlmEngine.isCapable()
             val downloaded = localLlmEngine.isModelDownloaded()
-            _uiState.update {
-                it.copy(
-                    isLocalCapable = capable,
-                    isModelDownloaded = downloaded
-                )
-            }
+            _uiState.update { it.copy(isLocalCapable = capable, isModelDownloaded = downloaded) }
         }
         // Observar isReady en tiempo real
         viewModelScope.launch {
@@ -78,7 +74,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** Descarga el modelo Llama 3.2 1B Q4 desde GitHub Releases (~700 MB). */
+    /** Descarga el modelo Gemma 2B Q4 desde storage.googleapis.com (~1.5 GB). */
     fun downloadModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(isDownloading = true, downloadProgress = 0f, localError = null) }
@@ -89,7 +85,9 @@ class SettingsViewModel @Inject constructor(
                 it.copy(
                     isDownloading = false,
                     isModelDownloaded = success,
-                    localError = if (!success) "Error al descargar el modelo. Revisá tu conexión." else null
+                    localError = if (!success)
+                        "Error al descargar el modelo. Revisá tu conexión e intentá de nuevo."
+                    else null
                 )
             }
         }
@@ -102,7 +100,7 @@ class SettingsViewModel @Inject constructor(
             val ok = localLlmEngine.initialize()
             if (!ok) {
                 _uiState.update {
-                    it.copy(localError = "No se pudo inicializar el modelo. Verificá RAM disponible.")
+                    it.copy(localError = "No se pudo inicializar el modelo. Verificá que el dispositivo tenga >= 4 GB RAM.")
                 }
             }
         }

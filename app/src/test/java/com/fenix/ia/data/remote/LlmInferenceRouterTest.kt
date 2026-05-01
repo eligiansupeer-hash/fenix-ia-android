@@ -7,7 +7,8 @@ import org.junit.jupiter.api.Test
 
 class LlmInferenceRouterTest {
 
-    private val router = LlmInferenceRouter(mockk(), mockk())
+    // LlmInferenceRouter ahora recibe 3 parámetros: httpClient, apiKeyRepository, localLlmEngine
+    private val router = LlmInferenceRouter(mockk(), mockk(), mockk())
 
     /**
      * El umbral para elegir Gemini es 60_000 tokens (context window amplio).

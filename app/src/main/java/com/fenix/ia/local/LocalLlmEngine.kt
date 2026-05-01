@@ -5,9 +5,10 @@ import android.content.Context
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.*
-import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.http.HttpHeaders
+import io.ktor.http.isSuccess
 import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -124,8 +125,11 @@ class LocalLlmEngine @Inject constructor(
         val tmpFile  = File(destDir, "$MODEL_FILE.tmp")
         try {
             httpClient.prepareGet(url).execute { response ->
+                // isSuccess() es extensión de io.ktor.http sobre HttpStatusCode
                 if (!response.status.isSuccess()) return@execute
-                val totalBytes = response.contentLength() ?: -1L
+                // contentLength() no existe como extensión directa en HttpResponse en Ktor 2.x;
+                // se lee del header Content-Length
+                val totalBytes = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
                 var downloaded = 0L
                 val channel = response.bodyAsChannel()
                 tmpFile.outputStream().use { out ->

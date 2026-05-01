@@ -2,7 +2,7 @@ package com.fenix.ia.tools
 
 import android.content.Context
 import com.fenix.ia.data.local.objectbox.RagEngine
-import com.fenix.ia.data.remote.ApiProvider
+import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
 import com.fenix.ia.data.remote.StreamEvent
@@ -225,7 +225,6 @@ class ToolExecutor @Inject constructor(
             val searchResult = webResearcher.search(subQuery, 3)
             if (searchResult is ToolResult.Success) {
                 allResults.appendLine(searchResult.outputJson)
-                // Indexar resultados en RAG si tenemos projectId
                 if (projectId.isNotBlank()) {
                     try {
                         ragEngine.indexDocument(
@@ -251,7 +250,7 @@ class ToolExecutor @Inject constructor(
 
         return ToolResult.Success(buildJsonObject {
             put("report",  report.trim())
-            put("sources", buildJsonArray {}) // las fuentes están referenciadas dentro del report
+            put("sources", buildJsonArray {})
         }.toString())
     }
 
@@ -310,13 +309,11 @@ class ToolExecutor @Inject constructor(
 
         return try {
             val doc  = org.apache.poi.xwpf.usermodel.XWPFDocument()
-            // Título
             val titlePara = doc.createParagraph()
             val titleRun  = titlePara.createRun()
             titleRun.isBold   = true
             titleRun.fontSize = 16
             titleRun.setText(title)
-            // Contenido
             content.split("\n").forEach { line ->
                 val para = doc.createParagraph()
                 para.createRun().setText(line)
@@ -348,12 +345,10 @@ class ToolExecutor @Inject constructor(
             val page     = pdfDoc.startPage(pageInfo)
             val canvas   = page.canvas
 
-            // Título
             paint.textSize       = 18f
             paint.isFakeBoldText = true
             canvas.drawText(title.take(80), 40f, 60f, paint)
 
-            // Contenido
             paint.textSize       = 12f
             paint.isFakeBoldText = false
             var y = 100f

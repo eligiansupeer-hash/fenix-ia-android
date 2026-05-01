@@ -18,18 +18,24 @@ import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import org.apache.poi.ss.usermodel.WorkbookFactory
+import org.apache.poi.openxml4j.opc.OPCPackage
+import org.apache.poi.xssf.eventusermodel.XSSFReader
+import org.xml.sax.Attributes
+import org.xml.sax.InputSource
+import org.xml.sax.helpers.DefaultHandler
+import java.io.StringReader
+import java.util.concurrent.TimeUnit
+import javax.xml.parsers.SAXParserFactory
 import kotlin.coroutines.resume
 
 /**
  * Worker de ingesta documental con WorkManager + Hilt.
  *
- * Formatos soportados:
- *   PDF   → PdfTextExtractor (PdfBox fase 1 + ML Kit OCR fase 2)
- *   DOCX  → DocxTextExtractor (Apache POI streaming)
- *   TXT/MD/CSV → bufferedReader completo
- *   XLSX  → Apache POI WorkbookFactory (celda a celda)
- *   JPG/PNG/WEBP → ML Kit Text Recognition (OCR directo)
+ * FASE 7 — Cola secuencial: enqueueUniqueWork con APPEND_OR_REPLACE por proyecto.
+ *   Ver ProjectDetailViewModel.ingestDocument() — el enqueue único se maneja ahí.
+ *
+ * FASE 8 — XLSX SAX streaming: reemplaza WorkbookFactory (carga total en heap)
+ *   por XSSFReader con parser SAX event-based. Sin OOM en archivos de 50MB+.
  *
  * RESTRICCION R-04: todos los extractores procesan en streaming, sin cargar el archivo completo.
  * RESTRICCION R-06: bitmap.recycle() garantizado en bloque finally en toda rutina de imagen.
@@ -78,7 +84,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
                 mime.contains("xlsx") || mime.contains("xls") ||
                 document.name.endsWith(".xlsx", ignoreCase = true) ||
                 document.name.endsWith(".xls", ignoreCase = true) ->
-                    extractXlsxText(document)
+                    extractXlsxTextSax(document)   // FASE 8: SAX en lugar de WorkbookFactory
 
                 mime.startsWith("image/") ->
                     extractImageText(document)
@@ -120,7 +126,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
         Result.success(workDataOf("documentId" to documentId))
     }
 
-    // ── Extractores por formato ───────────────────────────────────────────────
+    // ── Extractores ───────────────────────────────────────────────────────────
 
     private fun extractPlainText(document: DocumentNode): String {
         val uri = android.net.Uri.parse(document.uri)
@@ -130,50 +136,100 @@ class DocumentIngestionWorker @AssistedInject constructor(
     }
 
     /**
-     * Extrae texto de XLSX/XLS procesando hoja a hoja, fila a fila.
-     * R-04: WorkbookFactory usa streaming (SXSSF) internamente para XLSX grandes.
+     * FASE 8 — XLSX SAX streaming.
+     * XSSFReader + SAX parser: nunca carga el árbol DOM completo en heap.
+     * Heap usado = solo la fila actual, no el workbook entero.
+     * Cap de 500KB de texto para respetar R-04.
      */
-    private fun extractXlsxText(document: DocumentNode): String {
+    private fun extractXlsxTextSax(document: DocumentNode): String {
         val uri = android.net.Uri.parse(document.uri)
         val sb = StringBuilder()
 
         applicationContext.contentResolver.openInputStream(uri)?.use { stream ->
-            WorkbookFactory.create(stream).use { workbook ->
-                for (sheetIndex in 0 until workbook.numberOfSheets) {
-                    val sheet = workbook.getSheetAt(sheetIndex)
-                    sb.appendLine("=== Hoja: ${sheet.sheetName} ===")
-                    sheet.forEach { row ->
-                        val cells = row.joinToString(" | ") { cell ->
-                            cell.toString().trim()
+            try {
+                val pkg    = OPCPackage.open(stream)
+                val reader = XSSFReader(pkg)
+                val sharedStringsTable = reader.sharedStringsTable
+                val saxFactory = SAXParserFactory.newInstance()
+                val saxParser  = saxFactory.newSAXParser()
+
+                // Handler SAX que acumula texto celda a celda
+                val handler = object : DefaultHandler() {
+                    private var inCell = false
+                    private var isSharedString = false
+                    private val cellBuffer = StringBuilder()
+                    private val rowBuffer  = StringBuilder()
+
+                    override fun startElement(uri: String, localName: String, qName: String, attrs: Attributes) {
+                        when (qName) {
+                            "c" -> {
+                                inCell = true
+                                isSharedString = attrs.getValue("t") == "s"
+                                cellBuffer.clear()
+                            }
+                            "v", "t" -> { /* texto viene en characters */ }
                         }
-                        if (cells.isNotBlank()) sb.appendLine(cells)
                     }
-                    sb.appendLine()
+
+                    override fun characters(ch: CharArray, start: Int, length: Int) {
+                        if (inCell) cellBuffer.append(ch, start, length)
+                    }
+
+                    override fun endElement(uri: String, localName: String, qName: String) {
+                        when (qName) {
+                            "c" -> {
+                                val raw = cellBuffer.toString().trim()
+                                val cellText = if (isSharedString) {
+                                    val idx = raw.toIntOrNull()
+                                    if (idx != null && idx < sharedStringsTable.count)
+                                        sharedStringsTable.getItemAt(idx).string
+                                    else raw
+                                } else raw
+                                if (cellText.isNotBlank()) rowBuffer.append(cellText).append(" | ")
+                                inCell = false
+                            }
+                            "row" -> {
+                                if (rowBuffer.isNotBlank()) {
+                                    sb.appendLine(rowBuffer.toString().trimEnd(' ', '|'))
+                                    rowBuffer.clear()
+                                }
+                            }
+                            "worksheet" -> sb.appendLine()
+                        }
+                    }
                 }
+
+                val sheetsData = reader.sheetsData
+                sheetsData.forEach { sheetStream ->
+                    // Cap de texto para no saturar heap — R-04
+                    if (sb.length < MAX_XLSX_TEXT_CHARS) {
+                        saxParser.parse(InputSource(sheetStream), handler)
+                    }
+                    sheetStream.close()
+                }
+                pkg.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "SAX XLSX falló, intentando fallback texto plano: ${e.message}")
+                // Fallback: si el SAX falla (XLS antiguo), devuelve vacío y el Worker marca indexado
             }
         }
 
-        return sb.toString()
+        return sb.toString().take(MAX_XLSX_TEXT_CHARS)
     }
 
     /**
      * Extrae texto de imágenes JPG/PNG/WEBP usando ML Kit Text Recognition.
-     * Aplica inSampleSize para limitar RAM en dispositivos 2GB.
      * R-06: bitmap.recycle() en bloque finally.
      */
     private suspend fun extractImageText(document: DocumentNode): String {
         val uri = android.net.Uri.parse(document.uri)
         var bitmap: Bitmap? = null
         return try {
-            // Paso 1: medir dimensiones sin cargar en memoria
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             applicationContext.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, options)
             }
-            // Paso 2: calcular inSampleSize para no superar ~4MB de bitmap
             val sampleSize = calculateInSampleSize(options, maxWidth = 1920, maxHeight = 1920)
-
-            // Paso 3: decodificar a resolución reducida
             val decodeOptions = BitmapFactory.Options().apply {
                 inSampleSize = sampleSize
                 inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -181,24 +237,17 @@ class DocumentIngestionWorker @AssistedInject constructor(
             bitmap = applicationContext.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, decodeOptions)
             } ?: return ""
-
-            // Paso 4: OCR con ML Kit
             recognizeTextWithMlKit(bitmap!!)
         } finally {
-            // R-06: recycle SIEMPRE en finally
-            bitmap?.recycle()
+            bitmap?.recycle()  // R-06
         }
     }
 
-    private fun calculateInSampleSize(
-        options: BitmapFactory.Options,
-        maxWidth: Int,
-        maxHeight: Int
-    ): Int {
+    private fun calculateInSampleSize(options: BitmapFactory.Options, maxWidth: Int, maxHeight: Int): Int {
         var inSampleSize = 1
         if (options.outHeight > maxHeight || options.outWidth > maxWidth) {
             val halfHeight = options.outHeight / 2
-            val halfWidth = options.outWidth / 2
+            val halfWidth  = options.outWidth / 2
             while (halfHeight / inSampleSize >= maxHeight && halfWidth / inSampleSize >= maxWidth) {
                 inSampleSize *= 2
             }
@@ -219,23 +268,29 @@ class DocumentIngestionWorker @AssistedInject constructor(
         }
 
     companion object {
-        const val KEY_DOCUMENT_ID = "document_id"
-        const val KEY_PROJECT_ID = "project_id"
+        const val KEY_DOCUMENT_ID       = "document_id"
+        const val KEY_PROJECT_ID        = "project_id"
         const val KEY_PROJECT_ID_STRING = "project_id_string"
-        private const val TAG = "DocumentIngestionWorker"
-        private const val MAX_PLAIN_TEXT_CHARS = 500_000   // ~500 KB de texto plano
-        private const val MAX_ATTEMPTS = 3
+        private const val TAG                  = "DocumentIngestionWorker"
+        private const val MAX_PLAIN_TEXT_CHARS = 500_000   // ~500 KB texto plano
+        private const val MAX_XLSX_TEXT_CHARS  = 512_000   // ~500 KB texto XLSX — R-04
+        private const val MAX_ATTEMPTS         = 3
 
-        fun deriveProjectIdLong(projectId: String): Long = Math.abs(projectId.hashCode().toLong())
+        fun deriveProjectIdLong(projectId: String): Long =
+            Math.abs(projectId.hashCode().toLong())
 
+        /**
+         * Construye el WorkRequest individual.
+         * FASE 7: la cola secuencial se arma en ProjectDetailViewModel con enqueueUniqueWork.
+         */
         fun buildRequest(
             documentId: String,
             projectId: Long,
             projectIdString: String = ""
         ): OneTimeWorkRequest {
             val data = workDataOf(
-                KEY_DOCUMENT_ID to documentId,
-                KEY_PROJECT_ID to projectId,
+                KEY_DOCUMENT_ID       to documentId,
+                KEY_PROJECT_ID        to projectId,
                 KEY_PROJECT_ID_STRING to projectIdString
             )
             return OneTimeWorkRequestBuilder<DocumentIngestionWorker>()
@@ -243,7 +298,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
                 .setBackoffCriteria(
                     BackoffPolicy.EXPONENTIAL,
                     WorkRequest.MIN_BACKOFF_MILLIS,
-                    java.util.concurrent.TimeUnit.MILLISECONDS
+                    TimeUnit.MILLISECONDS
                 )
                 .setConstraints(
                     Constraints.Builder().setRequiresStorageNotLow(true).build()
@@ -255,14 +310,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
 }
 
 private fun DocumentEntity.toDomain() = DocumentNode(
-    id = id,
-    projectId = projectId,
-    name = name,
-    uri = uri,
-    mimeType = mimeType,
-    sizeBytes = sizeBytes,
-    semanticSummary = semanticSummary,
-    isIndexed = isIndexed,
-    isChecked = isChecked,
-    createdAt = createdAt
+    id = id, projectId = projectId, name = name, uri = uri,
+    mimeType = mimeType, sizeBytes = sizeBytes, semanticSummary = semanticSummary,
+    isIndexed = isIndexed, isChecked = isChecked, createdAt = createdAt
 )

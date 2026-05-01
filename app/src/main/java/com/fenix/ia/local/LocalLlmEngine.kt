@@ -4,9 +4,16 @@ import android.app.ActivityManager
 import android.content.Context
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.ktor.client.*
+import io.ktor.client.plugins.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
@@ -16,7 +23,7 @@ import javax.inject.Singleton
 
 /**
  * Motor de inferencia LLM on-device usando MediaPipe LLM Inference.
- * Modelo: Llama 3.2 1B Q4 (~700 MB), descargado bajo demanda.
+ * Modelo: Gemma 2B Q4 (~1.5 GB), descargado bajo demanda desde storage.googleapis.com.
  * Solo se activa en dispositivos con >= 3500 MB RAM total (aprox 4 GB).
  *
  * Restricciones:
@@ -26,43 +33,39 @@ import javax.inject.Singleton
  */
 @Singleton
 class LocalLlmEngine @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val httpClient: HttpClient   // Ktor — maneja redirects HTTPS correctamente
 ) {
     companion object {
-        const val MODEL_DIR = "fenix_models"
-        const val MODEL_FILE = "llama3_2_1b_q4.task"
+        const val MODEL_DIR  = "fenix_models"
+        const val MODEL_FILE = "gemma_2b_q4.bin"  // modelo oficial Google/MediaPipe
         const val MIN_RAM_MB = 3_500L
-        private const val MAX_TOKENS = 1024
-        private const val TOP_K = 40
-        private const val TEMPERATURE = 0.8f
+        private const val MAX_TOKENS           = 1024
+        private const val TOP_K                = 40
+        private const val TEMPERATURE          = 0.8f
         private const val STREAMING_CHUNK_SIZE = 10
-        private const val STREAMING_DELAY_MS = 15L
+        private const val STREAMING_DELAY_MS   = 15L
+        private const val MIN_VALID_FILE_BYTES = 1_000_000L  // 1 MB mínimo para descartar redirects HTML
     }
 
     private var inference: LlmInference? = null
 
-    private val _isReady = kotlinx.coroutines.flow.MutableStateFlow(false)
-    val isReady: kotlinx.coroutines.flow.StateFlow<Boolean> = _isReady
+    private val _isReady = MutableStateFlow(false)
+    val isReady: StateFlow<Boolean> = _isReady
 
-    /**
-     * Devuelve true si el dispositivo tiene RAM suficiente para cargar el modelo.
-     * Llamar en cualquier thread — solo lee una propiedad del sistema.
-     */
+    /** Devuelve true si el dispositivo tiene RAM suficiente para cargar el modelo. */
     fun isCapable(): Boolean {
         val am = context.getSystemService(ActivityManager::class.java)
         val mi = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
         return mi.totalMem / (1024L * 1024L) >= MIN_RAM_MB
     }
 
-    /**
-     * Retorna true si el archivo del modelo existe en filesDir.
-     */
+    /** Retorna true si el archivo del modelo existe en filesDir. */
     fun isModelDownloaded(): Boolean =
         File(context.filesDir, "$MODEL_DIR/$MODEL_FILE").exists()
 
     /**
      * Inicializa LlmInference con el modelo ya descargado.
-     * No hace nada si el dispositivo no es capaz o el modelo no está descargado.
      * @return true si la inicialización fue exitosa.
      */
     suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
@@ -95,11 +98,9 @@ class LocalLlmEngine @Inject constructor(
             emit("[Error: modelo local no inicializado]")
             return@flow
         }
-        // generateResponse es bloqueante — se ejecuta en Dispatchers.Default
         val response = withContext(Dispatchers.Default) {
             model.generateResponse(prompt)
         }
-        // Simular streaming en chunks para que la UI responda progresivamente
         response.chunked(STREAMING_CHUNK_SIZE).forEach { chunk ->
             emit(chunk)
             delay(STREAMING_DELAY_MS)
@@ -107,44 +108,54 @@ class LocalLlmEngine @Inject constructor(
     }.flowOn(Dispatchers.Default)
 
     /**
-     * Descarga el modelo desde la URL proporcionada, reportando progreso [0..1].
-     * La descarga se hace en Dispatchers.IO sin bloquear Main thread (R-01).
-     * @return true si el archivo existe al finalizar.
+     * Descarga el modelo usando Ktor HttpClient — sigue redirects HTTPS→HTTPS correctamente
+     * (HttpURLConnection puro NO lo hace cuando el dominio cambia).
+     * Reporta progreso real [0..1] via onProgress.
+     * Usa archivo .tmp para evitar que un archivo parcial quede como "descargado".
+     *
+     * @return true si el archivo final existe y tiene tamaño > 1 MB.
      */
     suspend fun downloadModel(
         url: String,
         onProgress: (Float) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        val destDir = File(context.filesDir, MODEL_DIR).also { it.mkdirs() }
+        val destDir  = File(context.filesDir, MODEL_DIR).also { it.mkdirs() }
         val destFile = File(destDir, MODEL_FILE)
+        val tmpFile  = File(destDir, "$MODEL_FILE.tmp")
         try {
-            val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-            connection.connect()
-            val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: -1L
-            var downloadedBytes = 0L
-            connection.inputStream.use { input ->
-                destFile.outputStream().use { output ->
-                    val buffer = ByteArray(8 * 1024)
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        downloadedBytes += read
-                        if (totalBytes > 0) {
-                            onProgress(downloadedBytes.toFloat() / totalBytes.toFloat())
+            httpClient.prepareGet(url).execute { response ->
+                if (!response.status.isSuccess()) return@execute
+                val totalBytes = response.contentLength() ?: -1L
+                var downloaded = 0L
+                val channel = response.bodyAsChannel()
+                tmpFile.outputStream().use { out ->
+                    val buffer = ByteArray(32 * 1024)
+                    while (!channel.isClosedForRead) {
+                        val read = channel.readAvailable(buffer)
+                        if (read > 0) {
+                            out.write(buffer, 0, read)
+                            downloaded += read
+                            if (totalBytes > 0) onProgress(downloaded.toFloat() / totalBytes)
                         }
                     }
                 }
             }
-            connection.disconnect()
-            destFile.exists()
+            // Validar que no se haya descargado el HTML del redirect (200 bytes)
+            if (tmpFile.exists() && tmpFile.length() > MIN_VALID_FILE_BYTES) {
+                tmpFile.renameTo(destFile)
+                true
+            } else {
+                tmpFile.delete()
+                false
+            }
         } catch (e: Exception) {
-            destFile.delete() // limpiar archivo parcial
+            tmpFile.delete()
             false
         }
     }
 
     /**
-     * Libera el modelo de la memoria nativa (R-01: evitar fuga de memoria nativa).
+     * Libera el modelo de la memoria nativa.
      * Llamar cuando el usuario desactiva IA Local o la app va a background prolongado.
      */
     fun release() {

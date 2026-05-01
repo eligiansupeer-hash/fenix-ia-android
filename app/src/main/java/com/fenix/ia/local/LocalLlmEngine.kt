@@ -33,9 +33,10 @@ import javax.inject.Singleton
  * - minSdk = 26 compatible con MediaPipe 0.10.14
  *
  * FASE 5 — Streaming genuino:
- *   Eliminado generateResponse() síncrono + chunked/delay artificial.
- *   generate() usa callbackFlow con generateResponseAsync() + PartialResultListener nativo,
- *   emitiendo tokens reales tan pronto MediaPipe los produce.
+ *   generateResponseAsync(String) en MediaPipe 0.10.14 acepta solo 1 argumento.
+ *   El PartialResultListener se registra en LlmInferenceOptions al construir el motor.
+ *   generate() actualiza activeListener antes de cada llamada, logrando streaming
+ *   genuino por slot: cada token parcial llega al callbackFlow en tiempo real.
  */
 @Singleton
 class LocalLlmEngine @Inject constructor(
@@ -54,6 +55,15 @@ class LocalLlmEngine @Inject constructor(
 
     private var inference: LlmInference? = null
 
+    /**
+     * Slot del listener activo para la llamada en curso.
+     * MediaPipe registra el PartialResultListener en las options (una sola vez),
+     * por lo que este slot permite redirigir los tokens al Flow correcto por llamada.
+     * @Volatile garantiza visibilidad entre el hilo de MediaPipe y el de la corrutina.
+     */
+    @Volatile
+    private var activeListener: ((String?, Boolean) -> Unit)? = null
+
     private val _isReady = MutableStateFlow(false)
     val isReady: StateFlow<Boolean> = _isReady
 
@@ -70,6 +80,7 @@ class LocalLlmEngine @Inject constructor(
 
     /**
      * Inicializa LlmInference con el modelo ya descargado.
+     * Registra el PartialResultListener en las opciones — delega al slot activeListener.
      * @return true si la inicialización fue exitosa.
      */
     suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
@@ -82,6 +93,9 @@ class LocalLlmEngine @Inject constructor(
                 .setMaxTokens(MAX_TOKENS)
                 .setTopK(TOP_K)
                 .setTemperature(TEMPERATURE)
+                .setResultListener { partialResult, done ->
+                    activeListener?.invoke(partialResult, done)
+                }
                 .build()
             inference = LlmInference.createFromOptions(context, opts)
             _isReady.value = true
@@ -93,16 +107,19 @@ class LocalLlmEngine @Inject constructor(
     }
 
     /**
-     * FASE 5 — Streaming genuino via callbackFlow + generateResponseAsync().
+     * FASE 5 — Streaming genuino via slot activeListener + generateResponseAsync(String).
      *
-     * PartialResultListener recibe (partialResult: String?, done: Boolean).
-     * Cada token parcial se envía al Flow de inmediato con trySend().
-     * Cuando done=true se cierra el canal.
-     * awaitClose cancela la inferencia si el collector cancela el Flow.
+     * Flujo de ejecución:
+     * 1. Registra el listener del callbackFlow en activeListener.
+     * 2. Llama generateResponseAsync(prompt) — 1 solo argumento, API real de MediaPipe.
+     * 3. MediaPipe llama al PartialResultListener registrado en las options,
+     *    que delega a activeListener → trySend(token) al canal del Flow.
+     * 4. Cuando done=true el canal se cierra.
+     * 5. awaitClose limpia el slot y cancela la inferencia si el collector cancela el Flow.
      *
      * Contrato con ChatViewModel:
      * - Mismo Flow<String> que el streaming SSE remoto.
-     * - Primer token llega en 1–3 s de inferencia real.
+     * - Primer token llega en 1–3 s de inferencia real (sin delay artificial).
      * - No hay hilos bloqueados en el pool por operaciones C++.
      */
     fun generate(prompt: String): Flow<String> = callbackFlow {
@@ -112,11 +129,17 @@ class LocalLlmEngine @Inject constructor(
             close()
             return@callbackFlow
         }
-        model.generateResponseAsync(prompt) { partialResult, done ->
+        // Registrar listener de esta llamada en el slot compartido
+        activeListener = { partialResult, done ->
             partialResult?.let { trySend(it) }
             if (done) close()
         }
-        awaitClose { model.cancel() }
+        // generateResponseAsync(String) — 1 argumento, firma real MediaPipe 0.10.14
+        model.generateResponseAsync(prompt)
+        awaitClose {
+            activeListener = null
+            model.cancel()
+        }
     }.flowOn(Dispatchers.Default)
 
     /**
@@ -169,6 +192,7 @@ class LocalLlmEngine @Inject constructor(
      * Llamar cuando el usuario desactiva IA Local o la app va a background prolongado.
      */
     fun release() {
+        activeListener = null
         inference?.close()
         inference = null
         _isReady.value = false

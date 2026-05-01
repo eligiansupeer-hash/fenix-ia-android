@@ -64,7 +64,6 @@ class ChatViewModel @Inject constructor(
                 .collect { docs -> _uiState.update { it.copy(documents = docs) } }
         }
 
-        // Cargar proveedores cloud disponibles + IA Local si está activa
         viewModelScope.launch {
             apiKeyRepository.getConfiguredProviders().collect { cloudProviders ->
                 _uiState.update { state ->
@@ -77,7 +76,6 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        // Actualizar lista de proveedores si el modelo local cambia de estado
         viewModelScope.launch {
             localLlmEngine.isReady.collect { ready ->
                 _uiState.update { state ->
@@ -124,7 +122,6 @@ class ChatViewModel @Inject constructor(
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
             val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(content, checkedDocs)
 
-            // Usar proveedor seleccionado por el usuario, o auto-selección del router
             val provider = _uiState.value.selectedProvider
                 ?: llmRouter.selectProvider(
                     estimatedTokens = estimatedTokens,
@@ -273,6 +270,14 @@ class ChatViewModel @Inject constructor(
         return Triple(systemPrompt, estimatedTokens, contextMode)
     }
 
+    /**
+     * Colecta el stream de inferencia y actualiza el estado MVI.
+     *
+     * FASE 11: StreamEvent.Error limpia streamingBuffer explícitamente para
+     *   evitar "texto fantasma" en la siguiente interacción.
+     * FASE 12: ScrollToBottom eliminado — el scroll se maneja solo via
+     *   LaunchedEffect(messages.size) en ChatScreen (estado reactivo puro).
+     */
     private suspend fun collectInferenceStream(
         history: List<LlmMessage>,
         systemPrompt: String,
@@ -302,11 +307,18 @@ class ChatViewModel @Inject constructor(
                             )
                         )
                     }
+                    // FASE 12: Sin _effects.send(ScrollToBottom) — scroll via LaunchedEffect en UI
                     _uiState.update { it.copy(isStreaming = false, streamingBuffer = "") }
-                    _effects.send(ChatEffect.ScrollToBottom)
                 }
                 is StreamEvent.Error ->
-                    _uiState.update { it.copy(isStreaming = false, error = event.message) }
+                    // FASE 11: streamingBuffer limpiado explícitamente en error para evitar ghosting
+                    _uiState.update {
+                        it.copy(
+                            isStreaming = false,
+                            streamingBuffer = "",  // FASE 11: previene "texto fantasma"
+                            error = event.message
+                        )
+                    }
                 is StreamEvent.ProviderFallback ->
                     _uiState.update { it.copy(activeProvider = event.to) }
             }

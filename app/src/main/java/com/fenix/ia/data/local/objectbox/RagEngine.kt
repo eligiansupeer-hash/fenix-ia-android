@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.sqrt
 
 @Singleton
 class RagEngine @Inject constructor(
@@ -17,8 +18,25 @@ class RagEngine @Inject constructor(
     }
 
     /**
+     * Normaliza un vector a norma 1 (L2).
+     *
+     * Con vectores normalizados, la distancia EUCLIDEAN de ObjectBox
+     * es matemáticamente equivalente a similitud COSENO:
+     *   dist_eucl(u,v)² = 2 − 2·cos(u,v)   cuando ||u||=||v||=1
+     *
+     * Esto resuelve la incompatibilidad de anotación KSP con
+     * VectorDistanceType.COSINE en Kotlin 2.0+ sin migrar a Java.
+     */
+    private fun normalizeL2(vector: FloatArray): FloatArray {
+        val magnitude = sqrt(vector.map { it * it }.sum())
+        return if (magnitude == 0f) vector
+               else FloatArray(vector.size) { vector[it] / magnitude }
+    }
+
+    /**
      * Indexa un documento dividiéndolo en chunks y calculando embeddings.
      * Los chunks se procesan en lotes de 10 para no saturar RAM.
+     * Los vectores se normalizan L2 antes de persistir.
      */
     suspend fun indexDocument(
         projectId: Long,
@@ -34,7 +52,7 @@ class RagEngine @Inject constructor(
                     textPayload = chunkText,
                     chunkIndex = batchIndex * 10 + i,
                     tokenCount = chunkText.split(" ").size,
-                    embeddingVector = embeddingModel.encode(chunkText)
+                    embeddingVector = normalizeL2(embeddingModel.encode(chunkText))
                 )
             }
             chunkBox.put(entities)
@@ -42,15 +60,16 @@ class RagEngine @Inject constructor(
     }
 
     /**
-     * Búsqueda semántica por similaridad coseno.
-     * Retorna los [limit] chunks más relevantes para la query.
+     * Búsqueda semántica.
+     * El vector de query también se normaliza L2 para mantener
+     * coherencia métrica con los vectores almacenados.
      */
     suspend fun search(
         query: String,
         projectId: Long,
         limit: Int = 5
     ): List<DocumentChunk> = withContext(Dispatchers.Default) {
-        val queryVector = embeddingModel.encode(query)
+        val queryVector = normalizeL2(embeddingModel.encode(query))
         chunkBox.query(
             DocumentChunk_.embeddingVector.nearestNeighbors(queryVector, limit)
                 .and(DocumentChunk_.projectId.equal(projectId))
@@ -60,12 +79,6 @@ class RagEngine @Inject constructor(
     /**
      * Devuelve el texto COMPLETO de los documentos especificados, reconstruido
      * desde sus chunks ordenados por índice.
-     *
-     * NO tiene límite de caracteres por documento — el límite es el context window
-     * del LLM y es responsabilidad del ChatViewModel decidir si cabe o no.
-     *
-     * Retorna mapa documentNodeId → texto completo.
-     * Documentos sin chunks (no indexados aún) quedan fuera del mapa.
      */
     suspend fun getFullTextByDocumentNodeIds(
         documentNodeIds: List<String>
@@ -82,10 +95,6 @@ class RagEngine @Inject constructor(
         }.filterValues { it.isNotBlank() }
     }
 
-    /**
-     * Cuenta el total de tokens almacenados para un conjunto de documentos.
-     * Útil para decidir si usar texto completo o RAG semántico.
-     */
     suspend fun estimateTotalTokens(documentNodeIds: List<String>): Int =
         withContext(Dispatchers.IO) {
             if (documentNodeIds.isEmpty()) return@withContext 0
@@ -99,9 +108,8 @@ class RagEngine @Inject constructor(
         }
 
     /**
-     * Búsqueda semántica por query restringida a documentos específicos.
-     * Usado cuando el contexto total supera el context window — en vez de
-     * meter todo, buscamos los chunks más relevantes para la pregunta actual.
+     * Búsqueda semántica restringida a documentos específicos.
+     * Query vector normalizado L2.
      */
     suspend fun searchInDocuments(
         query: String,
@@ -109,9 +117,8 @@ class RagEngine @Inject constructor(
         limit: Int = 15
     ): List<DocumentChunk> = withContext(Dispatchers.Default) {
         if (documentNodeIds.isEmpty()) return@withContext emptyList()
-        val queryVector = embeddingModel.encode(query)
+        val queryVector = normalizeL2(embeddingModel.encode(query))
 
-        // Busca globalmente y filtra por los documentos seleccionados
         chunkBox.query(
             DocumentChunk_.embeddingVector.nearestNeighbors(queryVector, limit * 3)
         ).build().use { q ->

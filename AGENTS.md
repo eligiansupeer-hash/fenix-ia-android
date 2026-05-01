@@ -25,7 +25,8 @@
 - POLICY: Todo script JS evaluado debe pasar PolicyEngine antes de persistirse.
 
 ## Red
-- HTTP_CLIENT: Ktor con engine CIO. PROHIBIDO OkHttp directo como cliente primario.
+- HTTP_CLIENT: Ktor con engine OkHttp (migrado en Fase 10 — TLS fingerprint Chrome).
+  PROHIBIDO revertir a CIO. PROHIBIDO OkHttp directo como cliente primario sin Ktor.
 - STREAMING: Server-Sent Events (SSE) con Accept: text/event-stream.
 - FALLBACK_ORDER: Gemini → Groq → Mistral → OpenRouter → GitHub Models.
 

@@ -1,5 +1,6 @@
 package com.fenix.ia.orchestrator
 
+import android.util.Log
 import com.fenix.ia.data.local.objectbox.RagEngine
 import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
@@ -40,6 +41,11 @@ import javax.inject.Singleton
  *   Al finalizar el workflow (éxito o fallo) se invoca dynamicExecutionEngine.releaseSandbox()
  *   para liberar el proceso IPC de JavaScriptSandbox y devolver memoria al sistema.
  *
+ * FASE 4 — Parsing robusto del JSON del planificador:
+ *   Reemplaza la manipulación de strings con índices fijos por Regex \{[\s\S]*\},
+ *   usa Json { ignoreUnknownKeys = true }, registra rawResponse en log ante fallo,
+ *   y valida que el plan tenga más de un paso antes de activar el fallback SINTETIZADOR.
+ *
  * Formato de tool call:
  *   <tool_call>
  *   {"name": "web_search", "args": {"query": "...", "maxResults": 5}}
@@ -54,6 +60,10 @@ class OrchestratorEngine @Inject constructor(
     private val dynamicExecutionEngine: DynamicExecutionEngine
 ) {
     companion object {
+        private const val TAG = "OrchestratorEngine"
+        private val JSON_LENIENT = Json { ignoreUnknownKeys = true }
+        private val JSON_OBJECT_REGEX = Regex("""\{[\s\S]*\}""")
+
         private val PLANNER_PROMPT = """
             Eres un planificador multi-agente. Dado un objetivo, genera un plan de ejecución.
             Responde EXCLUSIVAMENTE con JSON válido, sin ningún texto fuera del JSON.
@@ -89,7 +99,6 @@ class OrchestratorEngine @Inject constructor(
 
         emit(OrchestratorEvent.PlanningStarted(goal))
 
-        // Cargar herramientas habilitadas. Si falla, el workflow se cancela con error visible.
         val enabledTools = try {
             toolRepository.getEnabledTools()
         } catch (e: Exception) {
@@ -176,8 +185,6 @@ class OrchestratorEngine @Inject constructor(
         val finalOutput = blackboard[lastIndex] ?: ""
         emit(OrchestratorEvent.WorkflowDone(finalOutput))
 
-        // FASE 3 — Liberar sandbox IPC al concluir el workflow.
-        // El sandbox se recreará en la próxima ejecución JavaScript si es necesario.
         dynamicExecutionEngine.releaseSandbox()
 
     }.flowOn(Dispatchers.IO)
@@ -302,26 +309,33 @@ class OrchestratorEngine @Inject constructor(
     // ── Planificación ─────────────────────────────────────────────────────────
 
     private suspend fun planTask(goal: String, provider: ApiProvider): WorkflowPlan {
-        var json = ""
+        var rawResponse = ""
         llmRouter.streamCompletion(
             messages     = listOf(LlmMessage("user", "OBJETIVO: $goal")),
             systemPrompt = PLANNER_PROMPT,
             provider     = provider
         ).collect { event ->
-            if (event is StreamEvent.Token) json += event.text
+            if (event is StreamEvent.Token) rawResponse += event.text
         }
-        return parseWorkflowPlan(goal, json.trim())
+        return parseWorkflowPlan(goal, rawResponse.trim())
     }
 
-    private fun parseWorkflowPlan(goal: String, json: String): WorkflowPlan {
+    /**
+     * FASE 4 — Parsing robusto tolerante a variaciones de formato del LLM.
+     *
+     * Estrategia:
+     * 1. Regex \{[\s\S]*\} extrae el primer objeto JSON del rawResponse,
+     *    tolerando texto previo/posterior y bloques de código markdown.
+     * 2. Json { ignoreUnknownKeys = true } para no romper ante campos desconocidos.
+     * 3. Ante fallo, se registra rawResponse completo en logcat para diagnóstico.
+     * 4. El fallback SINTETIZADOR solo se activa si el plan deserializado tiene ≤ 1 paso.
+     */
+    private fun parseWorkflowPlan(goal: String, rawResponse: String): WorkflowPlan {
         return try {
-            val clean = json
-                .substringAfter("```json\n", json)
-                .substringAfter("```\n", json)
-                .substringBefore("```")
-                .trim()
+            val matchResult = JSON_OBJECT_REGEX.find(rawResponse)
+            val cleanJson = matchResult?.value ?: rawResponse.trim()
 
-            val root  = Json.parseToJsonElement(clean).jsonObject
+            val root  = JSON_LENIENT.parseToJsonElement(cleanJson).jsonObject
             val steps = root["steps"]!!.jsonArray.mapIndexed { i, el ->
                 val o = el.jsonObject
                 WorkflowStep(
@@ -332,15 +346,27 @@ class OrchestratorEngine @Inject constructor(
                     requiresAudit  = o["requiresAudit"]?.jsonPrimitive?.booleanOrNull ?: false
                 )
             }
+
+            // Si el LLM generó un plan con un solo paso, activar fallback SINTETIZADOR
+            if (steps.size <= 1) {
+                Log.w(TAG, "Plan con ≤1 paso, activando fallback SINTETIZADOR. rawResponse:\n$rawResponse")
+                return buildSintetizadorFallback(goal)
+            }
+
             WorkflowPlan(UUID.randomUUID().toString(), goal, steps, WorkflowStatus.PENDING)
+
         } catch (e: Exception) {
-            WorkflowPlan(
-                id       = UUID.randomUUID().toString(),
-                userGoal = goal,
-                steps    = listOf(WorkflowStep(0, AgentRole.SINTETIZADOR, goal))
-            )
+            Log.e(TAG, "Error al parsear plan JSON. rawResponse:\n$rawResponse", e)
+            buildSintetizadorFallback(goal)
         }
     }
+
+    private fun buildSintetizadorFallback(goal: String): WorkflowPlan =
+        WorkflowPlan(
+            id       = UUID.randomUUID().toString(),
+            userGoal = goal,
+            steps    = listOf(WorkflowStep(0, AgentRole.SINTETIZADOR, goal))
+        )
 
     // ── Auditoría ─────────────────────────────────────────────────────────────
 
@@ -357,7 +383,7 @@ class OrchestratorEngine @Inject constructor(
         ).collect { event -> if (event is StreamEvent.Token) json += event.text }
 
         return try {
-            val o = Json { ignoreUnknownKeys = true }.parseToJsonElement(json.trim()).jsonObject
+            val o = JSON_LENIENT.parseToJsonElement(json.trim()).jsonObject
             AuditResult(
                 approved        = o["approved"]?.jsonPrimitive?.booleanOrNull ?: true,
                 issues          = o["issues"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),

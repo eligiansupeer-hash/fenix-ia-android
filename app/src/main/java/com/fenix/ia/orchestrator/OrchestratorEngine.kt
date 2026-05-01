@@ -18,6 +18,7 @@ import com.fenix.ia.tools.ToolCallParser
 import com.fenix.ia.tools.ToolExecutor
 import com.fenix.ia.tools.ToolResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -29,27 +30,13 @@ import javax.inject.Singleton
 /**
  * Motor central del sistema de agentes autónomos.
  *
- * Flujo por paso:
- *   1. Construir system prompt con herramientas disponibles para el rol
- *   2. Inferencia del agente
- *   3. Si el output contiene <tool_call> → ejecutar via ToolExecutor → inyectar resultado → repetir
- *   4. Audit opcional
- *   5. Persistir en Blackboard (RagEngine)
- *   6. Emitir StepDone
- *
- * FASE 3 — Sandbox persistente:
- *   Al finalizar el workflow (éxito o fallo) se invoca dynamicExecutionEngine.releaseSandbox()
- *   para liberar el proceso IPC de JavaScriptSandbox y devolver memoria al sistema.
- *
- * FASE 4 — Parsing robusto del JSON del planificador:
- *   Reemplaza la manipulación de strings con índices fijos por Regex \{[\s\S]*\},
- *   usa Json { ignoreUnknownKeys = true }, registra rawResponse en log ante fallo,
- *   y valida que el plan tenga más de un paso antes de activar el fallback SINTETIZADOR.
- *
- * Formato de tool call:
- *   <tool_call>
- *   {"name": "web_search", "args": {"query": "...", "maxResults": 5}}
- *   </tool_call>
+ * FASE 3 — Sandbox persistente: releaseSandbox() al finalizar workflow.
+ * FASE 4 — Parsing robusto JSON del planificador con Regex + ignoreUnknownKeys.
+ * FASE 9 — Frenos anti-bucle:
+ *   - consecutiveToolErrors: contador de errores consecutivos de herramienta.
+ *   - MAX_CONSECUTIVE_ERRORS = 2: al superarlo se inyecta directiva coercitiva de escape.
+ *   - Back-off exponencial entre reintentos: 2^n * 500ms.
+ *   - ToolExecutor reporta tipo de fallo específico para directivas más informativas.
  */
 @Singleton
 class OrchestratorEngine @Inject constructor(
@@ -63,6 +50,10 @@ class OrchestratorEngine @Inject constructor(
         private const val TAG = "OrchestratorEngine"
         private val JSON_LENIENT = Json { ignoreUnknownKeys = true }
         private val JSON_OBJECT_REGEX = Regex("""\{[\s\S]*\}""")
+
+        private const val MAX_TOOL_ITERATIONS    = 6
+        private const val MAX_CONSECUTIVE_ERRORS = 2
+        private const val BACKOFF_BASE_MS        = 500L
 
         private val PLANNER_PROMPT = """
             Eres un planificador multi-agente. Dado un objetivo, genera un plan de ejecución.
@@ -85,8 +76,6 @@ class OrchestratorEngine @Inject constructor(
             - requiresAudit=true solo para pasos críticos (código, datos estructurados)
             - NUNCA incluyas al AUDITOR como paso del plan (es invocado automáticamente)
         """.trimIndent()
-
-        private const val MAX_TOOL_ITERATIONS = 6
     }
 
     // ── API pública ────────────────────────────────────────────────────────────
@@ -191,6 +180,12 @@ class OrchestratorEngine @Inject constructor(
 
     // ── Loop de tool-use ──────────────────────────────────────────────────────
 
+    /**
+     * FASE 9 — Frenos anti-bucle:
+     * consecutiveToolErrors cuenta fallos de herramienta consecutivos.
+     * Al llegar a MAX_CONSECUTIVE_ERRORS se inyecta directiva coercitiva como mensaje "user"
+     * y se aplica back-off exponencial (2^n * 500ms) antes del siguiente ciclo.
+     */
     private suspend fun runToolUseLoop(
         step: WorkflowStep,
         initialCtx: String,
@@ -212,8 +207,29 @@ class OrchestratorEngine @Inject constructor(
         )
 
         var lastOutput = ""
+        var consecutiveToolErrors = 0
 
-        repeat(MAX_TOOL_ITERATIONS) { _ ->
+        repeat(MAX_TOOL_ITERATIONS) { iteration ->
+            // Back-off exponencial si hay errores consecutivos
+            if (consecutiveToolErrors > 0) {
+                val backoffMs = (1L shl consecutiveToolErrors) * BACKOFF_BASE_MS
+                Log.d(TAG, "Back-off $backoffMs ms tras $consecutiveToolErrors errores consecutivos")
+                delay(backoffMs)
+            }
+
+            // Directiva coercitiva: forzar abandono de la herramienta problemática
+            if (consecutiveToolErrors >= MAX_CONSECUTIVE_ERRORS) {
+                Log.w(TAG, "FASE 9: inyectando directiva coercitiva tras $consecutiveToolErrors errores")
+                messages.add(LlmMessage(
+                    role = "user",
+                    content = "DIRECTIVA DE SISTEMA: La herramienta ha fallado $consecutiveToolErrors " +
+                        "veces consecutivas con el mismo error de sintaxis. DEBES abandonar el uso de " +
+                        "esta herramienta en este paso. Resuelve la tarea con los datos ya disponibles " +
+                        "en el contexto o declara explícitamente que no puedes completar este sub-objetivo."
+                ))
+                consecutiveToolErrors = 0  // reset para no re-inyectar en iteraciones posteriores
+            }
+
             var iterOutput = ""
             var inferenceError: String? = null
 
@@ -241,16 +257,24 @@ class OrchestratorEngine @Inject constructor(
 
             val toolCalls = ToolCallParser.extractAll(iterOutput)
             val toolResultsBlock = StringBuilder()
+            var hasErrorInThisIteration = false
 
             for (call in toolCalls) {
                 val tool = allowedTools.firstOrNull { it.name == call.name }
                 val resultJson = if (tool == null) {
+                    hasErrorInThisIteration = true
                     """{"error": "Tool '${call.name}' no disponible para este agente"}"""
                 } else {
                     when (val r = toolExecutor.execute(tool, call.argsJson)) {
                         is ToolResult.Success -> r.outputJson
-                        is ToolResult.Error   -> """{"error": "${r.message}"}"""
-                        else                  -> """{"error": "resultado desconocido"}"""
+                        is ToolResult.Error   -> {
+                            hasErrorInThisIteration = true
+                            """{"error": "${r.message}"}"""
+                        }
+                        else -> {
+                            hasErrorInThisIteration = true
+                            """{"error": "resultado desconocido"}"""
+                        }
                     }
                 }
 
@@ -261,8 +285,10 @@ class OrchestratorEngine @Inject constructor(
                 toolResultsBlock.appendLine()
             }
 
-            val cleanOutput = ToolCallParser.stripToolCalls(iterOutput)
+            // Actualizar contador de errores consecutivos
+            if (hasErrorInThisIteration) consecutiveToolErrors++ else consecutiveToolErrors = 0
 
+            val cleanOutput = ToolCallParser.stripToolCalls(iterOutput)
             messages.add(LlmMessage("assistant", iterOutput))
             messages.add(LlmMessage("user",
                 "Resultados de las herramientas ejecutadas:\n\n$toolResultsBlock\n" +
@@ -320,16 +346,6 @@ class OrchestratorEngine @Inject constructor(
         return parseWorkflowPlan(goal, rawResponse.trim())
     }
 
-    /**
-     * FASE 4 — Parsing robusto tolerante a variaciones de formato del LLM.
-     *
-     * Estrategia:
-     * 1. Regex \{[\s\S]*\} extrae el primer objeto JSON del rawResponse,
-     *    tolerando texto previo/posterior y bloques de código markdown.
-     * 2. Json { ignoreUnknownKeys = true } para no romper ante campos desconocidos.
-     * 3. Ante fallo, se registra rawResponse completo en logcat para diagnóstico.
-     * 4. El fallback SINTETIZADOR solo se activa si el plan deserializado tiene ≤ 1 paso.
-     */
     private fun parseWorkflowPlan(goal: String, rawResponse: String): WorkflowPlan {
         return try {
             val matchResult = JSON_OBJECT_REGEX.find(rawResponse)
@@ -347,7 +363,6 @@ class OrchestratorEngine @Inject constructor(
                 )
             }
 
-            // Si el LLM generó un plan con un solo paso, activar fallback SINTETIZADOR
             if (steps.size <= 1) {
                 Log.w(TAG, "Plan con ≤1 paso, activando fallback SINTETIZADOR. rawResponse:\n$rawResponse")
                 return buildSintetizadorFallback(goal)

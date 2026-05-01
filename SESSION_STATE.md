@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-1 Mayo 2026 — Sesión 15 (Refactoria — FASE 3: Sandbox JS persistente)
+1 Mayo 2026 — Sesión 16 (Refactoria — FASE 4: Extractor JSON Orquestador)
 
 ---
 
@@ -27,8 +27,8 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 |------|-------------|--------|
 | FASE 1 | Materialización Capa de Datos (Hilt/Room) | ⏳ PENDIENTE |
 | FASE 2 | Corrección Pipeline RAG (Métrica Vectorial) | ⏳ PENDIENTE |
-| **FASE 3** | **Refactorización Sandbox JS — ciclo de vida persistente** | **✅ COMPLETO** |
-| FASE 4 | Corrección Extractor JSON Orquestador | ⏳ PENDIENTE |
+| FASE 3 | Refactorización Sandbox JS — ciclo de vida persistente | ✅ COMPLETO |
+| **FASE 4** | **Corrección Extractor JSON Orquestador** | **✅ COMPLETO** |
 | FASE 5 | Reemplazo Inferencia Síncrona → Streaming Real | ⏳ PENDIENTE |
 | FASE 6 | Gestión Ciclo de Vida Modelo Nativo (Memoria) | ⏳ PENDIENTE |
 | FASE 7 | Serialización Secuencial WorkManager OCR | ⏳ PENDIENTE |
@@ -41,38 +41,47 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ---
 
-## ✅ Sesión 15 — FASE 3 completada
+## ✅ Sesión 16 — FASE 4 completada
 
-### Diagnóstico previo al inicio
-`DynamicExecutionEngine.kt` ya tenía implementadas las microfases 1–4:
-- `private var sandbox` + `sandboxMutex` ✅
-- `getOrCreateSandbox()` con `withLock` ✅
-- `execute()` reutiliza sandbox, solo crea/destruye Isolate ✅
-- Sin bloques `.use {}` sobre el sandbox ✅
+### Archivo modificado
+`OrchestratorEngine.kt` — función `parseWorkflowPlan()`
 
-### Microfase 5 — `releaseSandbox()` invocado desde el orquestador
-**Faltaba:** `OrchestratorEngine` no inyectaba `DynamicExecutionEngine` ni llamaba `releaseSandbox()`.
+### Cambios aplicados (4 microfases)
 
-**Implementado en commit `6960e0f`:**
-- Añadido `private val dynamicExecutionEngine: DynamicExecutionEngine` al constructor de `OrchestratorEngine`
-- Añadido import `com.fenix.ia.sandbox.DynamicExecutionEngine`
-- `releaseSandbox()` invocado en 3 puntos de terminación del workflow:
-  1. Fallo al cargar catálogo de tools → `return@flow`
-  2. Plan vacío → `return@flow`
-  3. Workflow completado con éxito → tras emitir `WorkflowDone`
+**MF1 — Regex `\{[\s\S]*\}`**
+- Reemplaza `substringAfter/substringBefore` con índices fijos
+- `JSON_OBJECT_REGEX` extrae el primer objeto JSON del rawResponse
+- Tolera texto previo/posterior y bloques ` ```json ``` ` sin manipulación frágil
+- Si no hay match, usa `rawResponse.trim()` como fallback
 
-### Resultado esperado
-- El proceso IPC de JavaScriptSandbox se libera al finalizar cada workflow
-- El sandbox se recrea bajo demanda en la próxima ejecución JS
-- Memoria devuelta al sistema entre workflows
+**MF2 — `Json { ignoreUnknownKeys = true }`**
+- Instancia `JSON_LENIENT` en el companion object (reutilizada también en `auditOutput`)
+- Evita crash ante campos desconocidos emitidos por diferentes LLMs
+- Eliminada instanciación inline `Json { ignoreUnknownKeys = true }` que existía en auditOutput
+
+**MF3 — Log diagnóstico ante fallo**
+- `Log.e(TAG, "...", e)` registra el `rawResponse` completo antes del fallback
+- `Log.w(TAG, "...")` registra cuando el plan tiene ≤1 paso
+- TAG = `"OrchestratorEngine"` definido en companion object
+
+**MF4 — Validación de pasos antes del fallback**
+- Si `steps.size <= 1` → activa `buildSintetizadorFallback()` y registra warning
+- Fallback extraído a función privada `buildSintetizadorFallback(goal)` para reutilización
+- Variable renombrada `json` → `rawResponse` en `planTask()` para consistencia semántica
+
+### Commit
+`846bf07` — refactor(fase4): parsing robusto JSON planificador con Regex + ignoreUnknownKeys + log diagnóstico
 
 ---
 
-## Commits de la sesión 15
+## ✅ Sesión 15 — FASE 3 completada
 
-| Commit | Archivo | Descripción |
-|--------|---------|-------------|
-| `6960e0f` | `OrchestratorEngine.kt` | Inyectar DynamicExecutionEngine + releaseSandbox() en 3 puntos de terminación |
+### Microfase 5 — `releaseSandbox()` invocado desde el orquestador
+- Añadido `DynamicExecutionEngine` al constructor de `OrchestratorEngine`
+- `releaseSandbox()` invocado en 3 puntos de terminación del workflow
+
+### Commit
+`6960e0f` — OrchestratorEngine: inyectar DynamicExecutionEngine + releaseSandbox() en 3 puntos de terminación
 
 ---
 
@@ -102,7 +111,8 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | ArtifactsScreen árbol + filtros + exportar | ✅ |
 | OrchestratorEngine: error de tools es visible | ✅ |
 | AppModule: migración explícita MIGRATION_1_2 | ✅ |
-| **Sandbox JS persistente — releaseSandbox() en OrchestratorEngine** | ✅ |
+| Sandbox JS persistente — releaseSandbox() en OrchestratorEngine | ✅ |
+| **Parsing robusto JSON planificador (Fase 4)** | ✅ |
 
 ---
 
@@ -118,8 +128,7 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 ---
 
 ## Próximos pasos
-- **FASE 4** — Corrección del Extractor JSON del Orquestador (parsing robusto con Regex)
-- FASE 5 en adelante según orden del plan de refactoria
-- Verificar CI con commits de S14 + S15
+- **FASE 5** — Reemplazo de Inferencia Síncrona por Streaming Genuino (LocalLlmEngine.kt)
+- FASE 6 en adelante según orden del plan de refactoria
 - NODO-13 / NODO-14: Requieren dispositivo físico con ADB conectado
 - Release v2.0.0 en GitHub cuando CI esté verde

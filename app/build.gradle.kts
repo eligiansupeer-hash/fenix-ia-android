@@ -89,12 +89,12 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
-    // DataStore + Keystore
+    // DataStore
     implementation(libs.datastore.preferences)
 
-    // Ktor HTTP Client — usado por WebResearcher para búsqueda/scraping
+    // Ktor HTTP Client — motor OkHttp (Fase 10: TLS fingerprint Chrome para evadir WAF)
     implementation(libs.ktor.client.android)
-    implementation(libs.ktor.client.cio)
+    implementation(libs.ktor.client.okhttp)
     implementation(libs.ktor.content.negotiation)
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.logging)
@@ -125,7 +125,7 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.mlkit.text.recognition)
 
-    // ── IA Local On-Device (Fase 5) ───────────────────────────────────────────
+    // ── IA Local On-Device ────────────────────────────────────────────────────
     implementation(libs.mediapipe.genai)
 
     // ── Tests ─────────────────────────────────────────────────────────────────

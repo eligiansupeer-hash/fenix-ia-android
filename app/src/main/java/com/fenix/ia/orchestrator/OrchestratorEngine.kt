@@ -7,9 +7,14 @@ import com.fenix.ia.data.remote.StreamEvent
 import com.fenix.ia.data.remote.TaskType
 import com.fenix.ia.domain.model.AgentRole
 import com.fenix.ia.domain.model.ApiProvider
+import com.fenix.ia.domain.model.Tool
 import com.fenix.ia.domain.model.WorkflowPlan
 import com.fenix.ia.domain.model.WorkflowStep
 import com.fenix.ia.domain.model.WorkflowStatus
+import com.fenix.ia.domain.repository.ToolRepository
+import com.fenix.ia.tools.ToolCallParser
+import com.fenix.ia.tools.ToolExecutor
+import com.fenix.ia.tools.ToolResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -22,22 +27,28 @@ import javax.inject.Singleton
 /**
  * Motor central del sistema de agentes autónomos.
  *
- * Implementa el patrón Blackboard: cada paso deposita su output en un mapa
- * indexado por stepIndex. Los pasos siguientes acceden al contexto de sus
- * dependencias via [dependsOnSteps].
+ * CAMBIO PRINCIPAL (nodo-F2): ahora implementa el loop real de tool-use.
  *
  * Flujo por paso:
- *   1. Recuperar contexto RAG relevante (búsqueda semántica en ObjectBox)
- *   2. Recuperar outputs de pasos previos del Blackboard
- *   3. Inferencia del agente (LLM con systemPrompt y temperature del rol)
- *   4. Audit opcional vía AUDITOR (temperatura 0.0)
- *   5. Indexar output en RagEngine (Blackboard persistente)
+ *   1. Construir system prompt con herramientas disponibles para el rol
+ *   2. Inferencia del agente
+ *   3. Si el output contiene <tool_call> → ejecutar via ToolExecutor → inyectar resultado → repetir
+ *   4. Audit opcional
+ *   5. Persistir en Blackboard (RagEngine)
  *   6. Emitir StepDone
+ *
+ * El formato de tool call que el LLM debe producir:
+ *
+ *   <tool_call>
+ *   {"name": "web_search", "args": {"query": "...", "maxResults": 5}}
+ *   </tool_call>
  */
 @Singleton
 class OrchestratorEngine @Inject constructor(
     private val llmRouter: LlmInferenceRouter,
-    private val ragEngine: RagEngine
+    private val ragEngine: RagEngine,
+    private val toolExecutor: ToolExecutor,
+    private val toolRepository: ToolRepository
 ) {
     companion object {
         private val PLANNER_PROMPT = """
@@ -61,16 +72,13 @@ class OrchestratorEngine @Inject constructor(
             - requiresAudit=true solo para pasos críticos (código, datos estructurados)
             - NUNCA incluyas al AUDITOR como paso del plan (es invocado automáticamente)
         """.trimIndent()
+
+        /** Máximas iteraciones del loop tool-use por paso. Evita loops infinitos. */
+        private const val MAX_TOOL_ITERATIONS = 6
     }
 
-    /**
-     * Ejecuta un workflow completo para el objetivo dado.
-     * Emite [OrchestratorEvent] a medida que avanza.
-     *
-     * @param goal       Objetivo en lenguaje natural
-     * @param projectId  ID del proyecto (para RAG y Blackboard persistente)
-     * @param provider   Proveedor LLM preferido (null = selección automática)
-     */
+    // ── API pública ────────────────────────────────────────────────────────────
+
     fun executeWorkflow(
         goal: String,
         projectId: String,
@@ -79,7 +87,9 @@ class OrchestratorEngine @Inject constructor(
 
         emit(OrchestratorEvent.PlanningStarted(goal))
 
-        // ── PASO 1: Planificación ──────────────────────────────────────────────
+        // Cargar herramientas habilitadas UNA sola vez al inicio del workflow
+        val enabledTools = try { toolRepository.getEnabledTools() } catch (e: Exception) { emptyList() }
+
         val resolvedProvider = provider ?: ApiProvider.GROQ
         val plan = planTask(goal, resolvedProvider)
         emit(OrchestratorEvent.PlanReady(plan))
@@ -89,102 +99,223 @@ class OrchestratorEngine @Inject constructor(
             return@flow
         }
 
-        // ── PASO 2: Ejecución en orden topológico ─────────────────────────────
-        val blackboard = mutableMapOf<Int, String>()   // stepIndex → output
+        val blackboard = mutableMapOf<Int, String>()
 
         for (step in plan.steps.sortedBy { it.stepIndex }) {
             emit(OrchestratorEvent.StepStarted(step))
 
-            // Contexto RAG: búsqueda semántica en ObjectBox
-            val ragChunks = try {
+            // Herramientas permitidas para este rol
+            val allowedTools = enabledTools.filter { it.name in step.role.allowedTools }
+
+            // Contexto RAG
+            val ragCtx = try {
                 ragEngine.search(step.instruction, projectId.hashCode().toLong(), 5)
-            } catch (e: Exception) { emptyList() }
+                    .joinToString("\n---\n") { it.textPayload }
+            } catch (e: Exception) { "" }
 
-            val ragCtx = ragChunks.joinToString("\n---\n") { it.textPayload }
-
-            // Contexto Blackboard: outputs de pasos previos declarados como dependencia
             val priorCtx = step.dependsOnSteps
                 .mapNotNull { blackboard[it] }
                 .joinToString("\n\n")
 
-            val fullCtx = buildString {
+            val contextBlock = buildString {
                 if (ragCtx.isNotEmpty()) {
-                    appendLine("=== CONTEXTO RAG ===")
-                    appendLine(ragCtx)
+                    appendLine("=== CONTEXTO RAG ==="); appendLine(ragCtx)
                 }
                 if (priorCtx.isNotEmpty()) {
-                    appendLine("=== RESULTADOS DE PASOS PREVIOS ===")
-                    appendLine(priorCtx)
+                    appendLine("=== RESULTADOS DE PASOS PREVIOS ==="); appendLine(priorCtx)
                 }
             }
 
-            // ── PASO 3: Inferencia del agente ─────────────────────────────────
             val agentProvider = provider ?: llmRouter.selectProvider(
-                estimatedTokens = fullCtx.length / 4,
+                estimatedTokens = contextBlock.length / 4,
                 taskType = step.role.toTaskType()
             )
 
-            var output = ""
+            // ── LOOP DE TOOL-USE ─────────────────────────────────────────────
+            val output = runToolUseLoop(
+                step          = step,
+                initialCtx    = contextBlock,
+                allowedTools  = allowedTools,
+                provider      = agentProvider,
+                onToolCall    = { toolName, argsJson, result ->
+                    emit(OrchestratorEvent.ToolExecuted(toolName, argsJson, result))
+                }
+            )
+
+            // ── AUDIT ─────────────────────────────────────────────────────────
+            val finalOutput = if (step.requiresAudit && output.isNotBlank()) {
+                emit(OrchestratorEvent.AuditStarted(step))
+                val audit = auditOutput(step.instruction, output, agentProvider)
+                if (!audit.approved) {
+                    emit(OrchestratorEvent.AuditCorrected(step, audit.issues))
+                    audit.correctedOutput ?: output
+                } else output
+            } else output
+
+            // ── BLACKBOARD ───────────────────────────────────────────────────
+            if (finalOutput.isNotBlank()) {
+                try {
+                    ragEngine.indexDocument(
+                        projectId      = projectId.hashCode().toLong(),
+                        documentNodeId = "workflow_step_${step.stepIndex}_${System.currentTimeMillis()}",
+                        text           = finalOutput
+                    )
+                } catch (_: Exception) {}
+            }
+            blackboard[step.stepIndex] = finalOutput
+            emit(OrchestratorEvent.StepDone(step, finalOutput))
+        }
+
+        val lastIndex   = plan.steps.maxOf { it.stepIndex }
+        val finalOutput = blackboard[lastIndex] ?: ""
+        emit(OrchestratorEvent.WorkflowDone(finalOutput))
+
+    }.flowOn(Dispatchers.IO)
+
+    // ── Loop de tool-use ──────────────────────────────────────────────────────
+
+    /**
+     * Ejecuta el agente en un loop hasta que no haya más tool calls o se alcance MAX_TOOL_ITERATIONS.
+     *
+     * Cada iteración:
+     *   1. Llama al LLM con el historial acumulado
+     *   2. Si el output tiene <tool_call> → ejecuta → agrega resultado al historial → repite
+     *   3. Si no hay tool calls → retorna el output final limpio
+     *
+     * @param onToolCall callback para emitir OrchestratorEvent.ToolExecuted (suspend)
+     */
+    private suspend fun runToolUseLoop(
+        step: WorkflowStep,
+        initialCtx: String,
+        allowedTools: List<Tool>,
+        provider: ApiProvider,
+        onToolCall: suspend (toolName: String, argsJson: String, result: String) -> Unit
+    ): String {
+
+        // System prompt del agente + inyección del catálogo de tools disponibles
+        val systemPrompt = buildAgentSystemPrompt(step.role, allowedTools)
+
+        // Historial de mensajes para este paso (crece con cada iteración tool-use)
+        val messages = mutableListOf<LlmMessage>(
+            LlmMessage("user", buildString {
+                appendLine(step.instruction)
+                if (initialCtx.isNotBlank()) {
+                    appendLine()
+                    append(initialCtx)
+                }
+            })
+        )
+
+        var lastOutput = ""
+
+        repeat(MAX_TOOL_ITERATIONS) { iteration ->
+            var iterOutput = ""
             var inferenceError: String? = null
 
             llmRouter.streamCompletion(
-                messages = listOf(
-                    LlmMessage("user", buildString {
-                        appendLine(step.instruction)
-                        if (fullCtx.isNotBlank()) {
-                            appendLine()
-                            append(fullCtx)
-                        }
-                    })
-                ),
-                systemPrompt = step.role.systemPrompt,
-                provider = agentProvider,
-                temperature = step.role.temperature
+                messages     = messages,
+                systemPrompt = systemPrompt,
+                provider     = provider,
+                temperature  = step.role.temperature
             ).collect { event ->
                 when (event) {
-                    is StreamEvent.Token -> output += event.text
+                    is StreamEvent.Token -> iterOutput += event.text
                     is StreamEvent.Error -> inferenceError = event.message
                     else -> Unit
                 }
             }
 
-            if (inferenceError != null) {
-                emit(OrchestratorEvent.StepError(step, inferenceError!!))
-                // Continúa con output vacío — el siguiente paso lo ve en blackboard como ""
+            if (inferenceError != null || iterOutput.isBlank()) {
+                return lastOutput.ifBlank { iterOutput }
             }
 
-            // ── PASO 4: Audit opcional ────────────────────────────────────────
-            if (step.requiresAudit && output.isNotBlank()) {
-                emit(OrchestratorEvent.AuditStarted(step))
-                val audit = auditOutput(step.instruction, output, agentProvider)
-                if (!audit.approved) {
-                    output = audit.correctedOutput ?: output
-                    emit(OrchestratorEvent.AuditCorrected(step, audit.issues))
-                }
+            // ¿Hay tool calls en el output?
+            if (!ToolCallParser.hasToolCall(iterOutput)) {
+                // No hay más tool calls — el agente terminó
+                lastOutput = ToolCallParser.stripToolCalls(iterOutput)
+                return lastOutput
             }
 
-            // ── PASO 5: Persistir en Blackboard ──────────────────────────────
-            if (output.isNotBlank()) {
-                try {
-                    ragEngine.indexDocument(
-                        projectId     = projectId.hashCode().toLong(),
-                        documentNodeId = "workflow_step_${step.stepIndex}_${System.currentTimeMillis()}",
-                        text          = output
-                    )
-                } catch (e: Exception) {
-                    // No bloquear el workflow si falla el indexado
+            // Parsear y ejecutar todos los tool calls del output
+            val toolCalls = ToolCallParser.extractAll(iterOutput)
+            val toolResultsBlock = StringBuilder()
+
+            for (call in toolCalls) {
+                val tool = allowedTools.firstOrNull { it.name == call.name }
+                val resultJson = if (tool == null) {
+                    """{"error": "Tool '${call.name}' no disponible para este agente"}"""
+                } else {
+                    when (val r = toolExecutor.execute(tool, call.argsJson)) {
+                        is ToolResult.Success -> r.outputJson
+                        is ToolResult.Error   -> """{"error": "${r.message}"}"""
+                        else                  -> """{"error": "resultado desconocido"}"""
+                    }
                 }
+
+                onToolCall(call.name, call.argsJson, resultJson)
+
+                toolResultsBlock.appendLine("=== RESULTADO DE ${call.name} ===")
+                toolResultsBlock.appendLine(resultJson)
+                toolResultsBlock.appendLine()
             }
-            blackboard[step.stepIndex] = output
-            emit(OrchestratorEvent.StepDone(step, output))
+
+            // El texto limpio del output (sin tags) va como turno assistant
+            val cleanOutput = ToolCallParser.stripToolCalls(iterOutput)
+
+            // Agregar al historial: respuesta del agente + resultados de tools
+            messages.add(LlmMessage("assistant", iterOutput))
+            messages.add(LlmMessage("user",
+                "Resultados de las herramientas ejecutadas:\n\n$toolResultsBlock\n" +
+                "Continuá con tu tarea usando esta información. Si ya tenés todo lo necesario, " +
+                "responde con el resultado final sin usar más herramientas."))
+
+            lastOutput = cleanOutput
         }
 
-        // ── PASO 6: Output final ──────────────────────────────────────────────
-        val lastIndex = plan.steps.maxOf { it.stepIndex }
-        val finalOutput = blackboard[lastIndex] ?: ""
-        emit(OrchestratorEvent.WorkflowDone(finalOutput))
+        // Se alcanzó MAX_TOOL_ITERATIONS — retornar lo último acumulado
+        return lastOutput
+    }
 
-    }.flowOn(Dispatchers.IO)
+    // ── Construcción del system prompt con tools ──────────────────────────────
+
+    /**
+     * Inyecta el catálogo de herramientas disponibles en el system prompt del agente.
+     *
+     * Formato que entienden todos los LLMs (Groq/OpenAI/Anthropic/Gemini):
+     *
+     *   Para usar una herramienta, responde con:
+     *   <tool_call>
+     *   {"name": "nombre_tool", "args": { ...argumentos según el schema... }}
+     *   </tool_call>
+     */
+    private fun buildAgentSystemPrompt(role: AgentRole, tools: List<Tool>): String {
+        if (tools.isEmpty()) return role.systemPrompt
+
+        val toolsCatalog = tools.joinToString("\n\n") { tool ->
+            buildString {
+                appendLine("• **${tool.name}**: ${tool.description}")
+                appendLine("  Input schema: ${tool.inputSchema}")
+                appendLine("  Output schema: ${tool.outputSchema}")
+            }
+        }
+
+        return buildString {
+            appendLine(role.systemPrompt)
+            appendLine()
+            appendLine("═══════════════════════════════════════")
+            appendLine("HERRAMIENTAS DISPONIBLES:")
+            appendLine("═══════════════════════════════════════")
+            appendLine(toolsCatalog)
+            appendLine()
+            appendLine("Para usar una herramienta, incluí en tu respuesta:")
+            appendLine("<tool_call>")
+            appendLine("""{"name": "nombre_exacto", "args": { ...argumentos... }}""")
+            appendLine("</tool_call>")
+            appendLine()
+            appendLine("Podés usar múltiples herramientas en secuencia.")
+            appendLine("Cuando ya tengas toda la información necesaria, respondé sin usar más herramientas.")
+        }
+    }
 
     // ── Planificación ──────────────────────────────────────────────────────────
 
@@ -202,7 +333,6 @@ class OrchestratorEngine @Inject constructor(
 
     private fun parseWorkflowPlan(goal: String, json: String): WorkflowPlan {
         return try {
-            // Extrae el bloque JSON si el LLM envolvió la respuesta en ```json ... ```
             val clean = json
                 .substringAfter("```json\n", json)
                 .substringAfter("```\n", json)
@@ -214,82 +344,50 @@ class OrchestratorEngine @Inject constructor(
                 val o = el.jsonObject
                 WorkflowStep(
                     stepIndex      = o["stepIndex"]?.jsonPrimitive?.intOrNull ?: i,
-                    role           = AgentRole.valueOf(
-                        o["role"]!!.jsonPrimitive.content.uppercase()
-                    ),
+                    role           = AgentRole.valueOf(o["role"]!!.jsonPrimitive.content.uppercase()),
                     instruction    = o["instruction"]!!.jsonPrimitive.content,
-                    dependsOnSteps = o["dependsOnSteps"]?.jsonArray
-                        ?.map { it.jsonPrimitive.int } ?: emptyList(),
+                    dependsOnSteps = o["dependsOnSteps"]?.jsonArray?.map { it.jsonPrimitive.int } ?: emptyList(),
                     requiresAudit  = o["requiresAudit"]?.jsonPrimitive?.booleanOrNull ?: false
                 )
             }
-            WorkflowPlan(
-                id         = UUID.randomUUID().toString(),
-                userGoal   = goal,
-                steps      = steps,
-                status     = WorkflowStatus.PENDING
-            )
+            WorkflowPlan(UUID.randomUUID().toString(), goal, steps, WorkflowStatus.PENDING)
         } catch (e: Exception) {
-            // Fallback: paso único con SINTETIZADOR
             WorkflowPlan(
                 id       = UUID.randomUUID().toString(),
                 userGoal = goal,
-                steps    = listOf(
-                    WorkflowStep(
-                        stepIndex   = 0,
-                        role        = AgentRole.SINTETIZADOR,
-                        instruction = goal
-                    )
-                )
+                steps    = listOf(WorkflowStep(0, AgentRole.SINTETIZADOR, goal))
             )
         }
     }
 
     // ── Auditoría ──────────────────────────────────────────────────────────────
 
-    private data class AuditResult(
-        val approved: Boolean,
-        val issues: List<String>,
-        val correctedOutput: String?
-    )
+    private data class AuditResult(val approved: Boolean, val issues: List<String>, val correctedOutput: String?)
 
-    private suspend fun auditOutput(
-        instruction: String,
-        output: String,
-        provider: ApiProvider
-    ): AuditResult {
+    private suspend fun auditOutput(instruction: String, output: String, provider: ApiProvider): AuditResult {
         var json = ""
         llmRouter.streamCompletion(
-            messages = listOf(
-                LlmMessage(
-                    "user",
-                    "INSTRUCCIÓN ORIGINAL:\n$instruction\n\nOUTPUT A AUDITAR:\n$output"
-                )
-            ),
+            messages = listOf(LlmMessage("user",
+                "INSTRUCCIÓN ORIGINAL:\n$instruction\n\nOUTPUT A AUDITAR:\n$output")),
             systemPrompt = AgentRole.AUDITOR.systemPrompt,
             provider     = provider,
             temperature  = AgentRole.AUDITOR.temperature
-        ).collect { event ->
-            if (event is StreamEvent.Token) json += event.text
-        }
+        ).collect { event -> if (event is StreamEvent.Token) json += event.text }
 
         return try {
-            val o = Json { ignoreUnknownKeys = true }
-                .parseToJsonElement(json.trim()).jsonObject
+            val o = Json { ignoreUnknownKeys = true }.parseToJsonElement(json.trim()).jsonObject
             AuditResult(
                 approved        = o["approved"]?.jsonPrimitive?.booleanOrNull ?: true,
-                issues          = o["issues"]?.jsonArray
-                    ?.map { it.jsonPrimitive.content } ?: emptyList(),
+                issues          = o["issues"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
                 correctedOutput = o["correctedOutput"]?.jsonPrimitive?.contentOrNull
             )
         } catch (e: Exception) {
-            AuditResult(approved = true, issues = emptyList(), correctedOutput = null)
+            AuditResult(true, emptyList(), null)
         }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    /** Mapea el rol del agente al TaskType del LlmRouter para selección óptima de proveedor. */
     private fun AgentRole.toTaskType(): TaskType = when (this) {
         AgentRole.PROGRAMADOR  -> TaskType.CODE_GENERATION
         AgentRole.ANALISTA     -> TaskType.REASONING

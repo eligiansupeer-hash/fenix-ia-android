@@ -3,12 +3,14 @@ package com.fenix.ia.presentation.chat
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
@@ -21,12 +23,24 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.model.Message
 import com.fenix.ia.domain.model.MessageRole
 import kotlinx.coroutines.flow.collectLatest
+
+// ── Extensión de display name para el enum ApiProvider ───────────────────────
+val ApiProvider.displayName: String
+    get() = when (this) {
+        ApiProvider.GEMINI          -> "Gemini"
+        ApiProvider.GROQ            -> "Groq"
+        ApiProvider.MISTRAL         -> "Mistral"
+        ApiProvider.OPENROUTER      -> "OpenRouter"
+        ApiProvider.GITHUB_MODELS   -> "GitHub AI"
+        ApiProvider.LOCAL_ON_DEVICE -> "IA Local"
+    }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,15 +84,12 @@ fun ChatScreen(
                         listState.animateScrollToItem(uiState.messages.size - 1)
                     }
                 }
-                is ChatEffect.ShowError -> {
-                    snackbarHostState.showSnackbar(effect.message)
-                }
+                is ChatEffect.ShowError -> snackbarHostState.showSnackbar(effect.message)
                 is ChatEffect.OpenFilePicker -> { /* handled in ProjectDetail */ }
             }
         }
     }
 
-    // imePadding() en el Scaffold: el bottomBar sube sobre el teclado
     Scaffold(
         modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -89,7 +100,7 @@ fun ChatScreen(
                         Text("Chat", style = MaterialTheme.typography.titleMedium)
                         uiState.activeProvider?.let { provider ->
                             Text(
-                                text = "⚡ ${provider.name}",
+                                text = "⚡ ${provider.displayName}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -116,11 +127,19 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            ChatInputBar(
-                isStreaming = uiState.isStreaming,
-                onSend = { content -> viewModel.processIntent(ChatIntent.SendMessage(content)) },
-                onStop = { viewModel.processIntent(ChatIntent.StopStreaming) }
-            )
+            Column {
+                // Selector de proveedor — encima del input bar
+                ProviderSelector(
+                    providers  = uiState.availableProviders,
+                    selected   = uiState.selectedProvider,
+                    onSelect   = { viewModel.processIntent(ChatIntent.SelectProvider(it)) }
+                )
+                ChatInputBar(
+                    isStreaming = uiState.isStreaming,
+                    onSend     = { content -> viewModel.processIntent(ChatIntent.SendMessage(content)) },
+                    onStop     = { viewModel.processIntent(ChatIntent.StopStreaming) }
+                )
+            }
         }
     ) { padding ->
         Column(
@@ -186,6 +205,47 @@ fun ChatScreen(
         }
     }
 }
+
+// ── Selector de proveedor ─────────────────────────────────────────────────────
+
+@Composable
+private fun ProviderSelector(
+    providers: List<ApiProvider>,
+    selected: ApiProvider?,
+    onSelect: (ApiProvider?) -> Unit
+) {
+    if (providers.isEmpty()) return
+
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Chip "Auto" — delega la elección al router
+        item {
+            FilterChip(
+                selected = selected == null,
+                onClick  = { onSelect(null) },
+                label    = { Text("Auto", style = MaterialTheme.typography.labelSmall) }
+            )
+        }
+        items(providers) { provider ->
+            FilterChip(
+                selected    = selected == provider,
+                onClick     = { onSelect(provider) },
+                label       = {
+                    Text(provider.displayName, style = MaterialTheme.typography.labelSmall)
+                },
+                leadingIcon = if (provider == ApiProvider.LOCAL_ON_DEVICE) {
+                    { Icon(Icons.Default.PhoneAndroid, null, modifier = Modifier.size(14.dp)) }
+                } else null
+            )
+        }
+    }
+}
+
+// ── Resto de composables ──────────────────────────────────────────────────────
 
 @Composable
 private fun DocumentContextPanel(
@@ -314,7 +374,7 @@ private fun StreamingIndicator(
             Column(modifier = Modifier.padding(12.dp)) {
                 provider?.let {
                     Text(
-                        text = "⚡ ${it.name}",
+                        text = "⚡ ${it.displayName}",   // displayName en lugar de .name
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )

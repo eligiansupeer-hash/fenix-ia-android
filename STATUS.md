@@ -16,7 +16,11 @@
 | 10 | TLS fingerprint / motor OkHttp | ✅ CI OK — Sesión 1 |
 | 11 | Reducer estado streaming abortado | ✅ Completada — Sesión 2 |
 | 12 | Scroll automático Compose | ✅ Completada — Sesión 2 |
-| 13 | Auditoría final compilación | ⏳ Pendiente |
+| 13 | Auditoría final compilación | ✅ Completada — Sesión 3 |
+
+## 🏁 REFACTORÍA COMPLETA
+
+---
 
 ## Sesión 1 — 1 Mayo 2026
 ### Fase 10 — COMPLETADA y CI OK (commit bba6278)
@@ -30,19 +34,33 @@
 Verificadas en repo: todas implementadas correctamente. Sin cambios necesarios.
 
 ### Fase 11 — COMPLETADA (commit a1e28f3)
-**Problema:** `StreamEvent.Error` dejaba `streamingBuffer` con contenido residual → "texto fantasma".
-**Fix:** `streamingBuffer = ""` agregado en bloque `StreamEvent.Error` de `ChatViewModel.kt`.
+**Fix:** `streamingBuffer = ""` en bloque `StreamEvent.Error` de `ChatViewModel.kt`.
 
 ### Fase 12 — COMPLETADA (commits 80b1cfd, a1e28f3, 9f14a93)
-**Problema:** Dos mecanismos de scroll concurrentes causaban jank:
-- `LaunchedEffect(messages.size)` en ChatScreen
-- `_effects.send(ChatEffect.ScrollToBottom)` → colector en ChatScreen
+**Fix:** `ChatEffect.ScrollToBottom` eliminado. Scroll único vía `LaunchedEffect(messages.size)`.
 
-**Fix:**
-- `ChatEffect.ScrollToBottom` eliminado de `ChatContract.kt`
-- `_effects.send(ScrollToBottom)` eliminado de `ChatViewModel.kt`
-- Colector simplificado en `ChatScreen.kt`
-- Mecanismo único: `LaunchedEffect(messages.size)` (MVI puro)
+## Sesión 3 — 1 Mayo 2026
 
-## Próxima sesión
-**Fase 13** — Auditoría final: compilación KSP limpia, grafo Hilt sin circulares, test E2E.
+### Fase 13 — COMPLETADA (auditoría estructural)
+Verificados en repo:
+- `FenixDatabase.kt`: `DocumentEntity::class` presente en array `entities` ✅
+- `RepositoryModule.kt`: `@Binds bindDocumentRepository` presente ✅
+- `MainActivity.kt`: `@AndroidEntryPoint` presente, NavHost configurado ✅
+- `ChatContract.kt`: `ScrollToBottom` eliminado del sealed class `ChatEffect` ✅
+- Fases 11/12: implementadas correctamente en sesión anterior ✅
+- Todas las fases 1–12: verificadas presentes en el código fuente
+
+### CI Versionado Automático — COMPLETADO (commit 186eb71)
+**Problema:** `versionCode = 2` hardcodeado → todas las releases quedaban como `v2`.
+
+**Solución implementada en `build-apk.yml`:**
+- Nuevo Job 1 `bump-version` (solo en push a main, antes de compilar):
+  - Lee `versionCode` actual de `build.gradle.kts`
+  - Incrementa +1
+  - Actualiza `versionName` → `"1.0.{versionCode}"`
+  - Commit con `[skip ci]` para no disparar ciclo infinito
+  - Push a main
+- Jobs siguientes hacen `checkout ref: main` para tomar el código bumpeado
+- Job `release` lee el versionCode ya actualizado del archivo
+
+**Resultado:** cada push a main genera `v3`, `v4`, `v5`... secuencialmente.

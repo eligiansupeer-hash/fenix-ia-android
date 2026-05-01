@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-1 Mayo 2026 — Sesión 16 (Refactoria — FASE 4: Extractor JSON Orquestador)
+1 Mayo 2026 — Sesión 17 (Refactoria — FASE 5: Verificación Streaming Genuino LocalLlmEngine)
 
 ---
 
@@ -28,8 +28,8 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | FASE 1 | Materialización Capa de Datos (Hilt/Room) | ⏳ PENDIENTE |
 | FASE 2 | Corrección Pipeline RAG (Métrica Vectorial) | ⏳ PENDIENTE |
 | FASE 3 | Refactorización Sandbox JS — ciclo de vida persistente | ✅ COMPLETO |
-| **FASE 4** | **Corrección Extractor JSON Orquestador** | **✅ COMPLETO** |
-| FASE 5 | Reemplazo Inferencia Síncrona → Streaming Real | ⏳ PENDIENTE |
+| FASE 4 | Corrección Extractor JSON Orquestador | ✅ COMPLETO |
+| **FASE 5** | **Reemplazo Inferencia Síncrona → Streaming Real** | **✅ COMPLETO** |
 | FASE 6 | Gestión Ciclo de Vida Modelo Nativo (Memoria) | ⏳ PENDIENTE |
 | FASE 7 | Serialización Secuencial WorkManager OCR | ⏳ PENDIENTE |
 | FASE 8 | Extractor XLSX Streaming API (Apache POI) | ⏳ PENDIENTE |
@@ -38,6 +38,26 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | FASE 11 | Corrección Reducer Estado Streaming Abortado | ⏳ PENDIENTE |
 | FASE 12 | Consolidación Scroll Automático Jetpack Compose | ⏳ PENDIENTE |
 | FASE 13 | Auditoría Final Integración + Checklist Compilación | ⏳ PENDIENTE |
+
+---
+
+## ✅ Sesión 17 — FASE 5 verificada completa
+
+### Archivos verificados (sin modificación requerida)
+
+- `local/LocalLlmEngine.kt` — `generate()` ya usa `callbackFlow` + `generateResponseAsync()` nativo con `PartialResultListener`. `awaitClose { model.cancel() }` presente. `flowOn(Dispatchers.Default)`.
+- `data/remote/LlmInferenceRouter.kt` — Rama `LOCAL_ON_DEVICE` cortocircuita cloud, construye prompt plano con `buildLocalPrompt()`, colecta `localLlmEngine.generate(prompt)` y emite `StreamEvent.Token` por cada chunk.
+- `presentation/chat/ChatViewModel.kt` — `collectInferenceStream()` usa el mismo contrato `Flow<StreamEvent>` para local y cloud. No hay delay artificial ni fragmentación simulada.
+
+### Todas las microfases del plan cumplidas
+
+- MF1 ✅ — Eliminado `generateResponse()` síncrono. Reemplazado por `callbackFlow`.
+- MF2 ✅ — Eliminado bucle de fragmentación artificial con `delay()`.
+- MF3 ✅ — `callbackFlow` + `generateResponseAsync()` + `PartialResultListener` nativo.
+- MF4 ✅ — LiteRT-LM evaluado: MediaPipe ya es el wrapper recomendado con API estable.
+- MF5 ✅ — ChatViewModel colecta `Flow<String>` local con mismo contrato que SSE remoto.
+
+### No se generó commit (código ya correcto desde sesión anterior)
 
 ---
 
@@ -74,17 +94,6 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ---
 
-## ✅ Sesión 15 — FASE 3 completada
-
-### Microfase 5 — `releaseSandbox()` invocado desde el orquestador
-- Añadido `DynamicExecutionEngine` al constructor de `OrchestratorEngine`
-- `releaseSandbox()` invocado en 3 puntos de terminación del workflow
-
-### Commit
-`6960e0f` — OrchestratorEngine: inyectar DynamicExecutionEngine + releaseSandbox() en 3 puntos de terminación
-
----
-
 ## 🟢 Estado general de la app
 
 | Función | Estado |
@@ -112,7 +121,8 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | OrchestratorEngine: error de tools es visible | ✅ |
 | AppModule: migración explícita MIGRATION_1_2 | ✅ |
 | Sandbox JS persistente — releaseSandbox() en OrchestratorEngine | ✅ |
-| **Parsing robusto JSON planificador (Fase 4)** | ✅ |
+| Parsing robusto JSON planificador (Fase 4) | ✅ |
+| **Streaming genuino LocalLlmEngine — callbackFlow nativo (Fase 5)** | ✅ |
 
 ---
 
@@ -128,7 +138,7 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 ---
 
 ## Próximos pasos
-- **FASE 5** — Reemplazo de Inferencia Síncrona por Streaming Genuino (LocalLlmEngine.kt)
-- FASE 6 en adelante según orden del plan de refactoria
+- **FASE 6** — Gestión Ciclo de Vida Modelo Nativo (LocalLlmEngine + DefaultLifecycleObserver)
+- FASE 7 en adelante según orden del plan de refactoria
 - NODO-13 / NODO-14: Requieren dispositivo físico con ADB conectado
 - Release v2.0.0 en GitHub cuando CI esté verde

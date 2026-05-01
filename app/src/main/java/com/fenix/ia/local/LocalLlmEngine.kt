@@ -115,12 +115,8 @@ class LocalLlmEngine @Inject constructor(
      * 3. MediaPipe llama al PartialResultListener registrado en las options,
      *    que delega a activeListener → trySend(token) al canal del Flow.
      * 4. Cuando done=true el canal se cierra.
-     * 5. awaitClose limpia el slot y cancela la inferencia si el collector cancela el Flow.
-     *
-     * Contrato con ChatViewModel:
-     * - Mismo Flow<String> que el streaming SSE remoto.
-     * - Primer token llega en 1–3 s de inferencia real (sin delay artificial).
-     * - No hay hilos bloqueados en el pool por operaciones C++.
+     * 5. awaitClose limpia el slot. LlmInference no expone cancel() público;
+     *    la inferencia en curso finaliza naturalmente o al cerrar el motor (release()).
      */
     fun generate(prompt: String): Flow<String> = callbackFlow {
         val model = inference
@@ -136,9 +132,9 @@ class LocalLlmEngine @Inject constructor(
         }
         // generateResponseAsync(String) — 1 argumento, firma real MediaPipe 0.10.14
         model.generateResponseAsync(prompt)
+        // LlmInference no expone cancel() — limpiar slot al cancelar el collector
         awaitClose {
             activeListener = null
-            model.cancel()
         }
     }.flowOn(Dispatchers.Default)
 

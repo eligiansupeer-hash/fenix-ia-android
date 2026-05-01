@@ -16,19 +16,18 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.ktor.client.*
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.*
 import io.ktor.serialization.kotlinx.json.*
 import io.objectbox.BoxStore
+import okhttp3.ConnectionSpec
+import okhttp3.TlsVersion
+import okhttp3.CipherSuite
 import javax.inject.Singleton
 
 /**
  * Migración v1 → v2: crea la tabla tools.
- *
- * Se usa addMigrations() en lugar de fallbackToDestructiveMigration() para que
- * las herramientas creadas por la IA (isUserGenerated = true) no se pierdan
- * en actualizaciones de esquema.
  */
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(database: SupportSQLiteDatabase) {
@@ -67,8 +66,6 @@ object AppModule {
             FenixDatabase::class.java,
             "fenix_ia_db"
         )
-        // Migración explícita: preserva tools creadas por la IA al actualizar el esquema.
-        // Si se agregan tablas futuras, añadir MIGRATION_2_3, etc.
         .addMigrations(MIGRATION_1_2)
         .build()
     }
@@ -87,26 +84,41 @@ object AppModule {
         return ObjectBoxStore.store
     }
 
+    // ── Ktor HttpClient — OkHttp engine con TLS fingerprint Chrome (Fase 10) ──
     @Provides
     @Singleton
     fun provideKtorClient(): HttpClient {
-        return HttpClient(CIO) {
+        // Perfil TLS equivalente a Chrome 120+ para evadir WAF/Cloudflare
+        val tlsSpec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+            .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2)
+            .cipherSuites(
+                CipherSuite.TLS_AES_128_GCM_SHA256,
+                CipherSuite.TLS_CHACHA20_POLY1305_SHA256,
+                CipherSuite.TLS_AES_256_GCM_SHA384,
+                CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                CipherSuite.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+            )
+            .build()
+
+        return HttpClient(OkHttp) {
             install(ContentNegotiation) { json() }
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000L
                 connectTimeoutMillis = 15_000L
+                socketTimeoutMillis  = 120_000L
             }
             engine {
-                requestTimeout = 120_000
-                threadsCount = 4
+                config {
+                    connectionSpecs(listOf(tlsSpec, ConnectionSpec.CLEARTEXT))
+                }
             }
         }
     }
 }
 
 /**
- * Binding de interfaz EmbeddingModel → TFLiteEmbeddingModel.
- * Módulo separado para permitir reemplazo en tests (FakeEmbeddingModel).
+ * Binding EmbeddingModel → TFLiteEmbeddingModel.
  */
 @Module
 @InstallIn(SingletonComponent::class)

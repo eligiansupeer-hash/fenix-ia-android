@@ -7,11 +7,14 @@ import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
 import com.fenix.ia.data.remote.StreamEvent
 import com.fenix.ia.data.remote.TaskType
+import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.model.Message
 import com.fenix.ia.domain.model.MessageRole
+import com.fenix.ia.domain.repository.ApiKeyRepository
 import com.fenix.ia.domain.repository.DocumentRepository
 import com.fenix.ia.domain.repository.MessageRepository
+import com.fenix.ia.local.LocalLlmEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -25,7 +28,9 @@ class ChatViewModel @Inject constructor(
     private val llmRouter: LlmInferenceRouter,
     private val messageRepository: MessageRepository,
     private val documentRepository: DocumentRepository,
-    private val ragEngine: RagEngine
+    private val ragEngine: RagEngine,
+    private val apiKeyRepository: ApiKeyRepository,
+    private val localLlmEngine: LocalLlmEngine
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -48,6 +53,7 @@ class ChatViewModel @Inject constructor(
     fun loadChat(chatId: String, projectId: String) {
         currentChatId = chatId
         currentProjectId = projectId
+
         viewModelScope.launch {
             messageRepository.getMessagesByChat(chatId)
                 .catch { e -> _uiState.update { it.copy(error = e.message) } }
@@ -57,16 +63,48 @@ class ChatViewModel @Inject constructor(
             documentRepository.getDocumentsByProject(projectId)
                 .collect { docs -> _uiState.update { it.copy(documents = docs) } }
         }
+
+        // Cargar proveedores cloud disponibles + IA Local si está activa
+        viewModelScope.launch {
+            apiKeyRepository.getConfiguredProviders().collect { cloudProviders ->
+                _uiState.update { state ->
+                    val all = buildList {
+                        if (localLlmEngine.isReady.value) add(ApiProvider.LOCAL_ON_DEVICE)
+                        addAll(cloudProviders)
+                    }
+                    state.copy(availableProviders = all)
+                }
+            }
+        }
+
+        // Actualizar lista de proveedores si el modelo local cambia de estado
+        viewModelScope.launch {
+            localLlmEngine.isReady.collect { ready ->
+                _uiState.update { state ->
+                    val providers = state.availableProviders.toMutableList()
+                    if (ready) {
+                        if (ApiProvider.LOCAL_ON_DEVICE !in providers)
+                            providers.add(0, ApiProvider.LOCAL_ON_DEVICE)
+                    } else {
+                        providers.remove(ApiProvider.LOCAL_ON_DEVICE)
+                    }
+                    val newSelected = if (!ready && state.selectedProvider == ApiProvider.LOCAL_ON_DEVICE)
+                        null else state.selectedProvider
+                    state.copy(availableProviders = providers, selectedProvider = newSelected)
+                }
+            }
+        }
     }
 
     fun processIntent(intent: ChatIntent) {
         when (intent) {
-            is ChatIntent.SendMessage -> sendMessage(intent.content, intent.attachmentIds)
+            is ChatIntent.SendMessage            -> sendMessage(intent.content, intent.attachmentIds)
             is ChatIntent.ToggleDocumentCheckpoint -> toggleCheckpoint(intent.documentId)
-            is ChatIntent.StopStreaming -> stopStreaming()
-            is ChatIntent.LoadChat -> loadChat(intent.chatId, "")
-            is ChatIntent.RegenerateLastMessage -> regenerateLastMessage()
-            is ChatIntent.DismissError -> _uiState.update { it.copy(error = null) }
+            is ChatIntent.StopStreaming          -> stopStreaming()
+            is ChatIntent.LoadChat               -> loadChat(intent.chatId, "")
+            is ChatIntent.RegenerateLastMessage  -> regenerateLastMessage()
+            is ChatIntent.DismissError           -> _uiState.update { it.copy(error = null) }
+            is ChatIntent.SelectProvider         -> _uiState.update { it.copy(selectedProvider = intent.provider) }
         }
     }
 
@@ -86,10 +124,12 @@ class ChatViewModel @Inject constructor(
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
             val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(content, checkedDocs)
 
-            val provider = llmRouter.selectProvider(
-                estimatedTokens = estimatedTokens,
-                taskType = detectTaskType(content)
-            )
+            // Usar proveedor seleccionado por el usuario, o auto-selección del router
+            val provider = _uiState.value.selectedProvider
+                ?: llmRouter.selectProvider(
+                    estimatedTokens = estimatedTokens,
+                    taskType = detectTaskType(content)
+                )
 
             _uiState.update {
                 it.copy(
@@ -124,10 +164,11 @@ class ChatViewModel @Inject constructor(
             val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
             val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(lastUserContent, checkedDocs)
 
-            val provider = llmRouter.selectProvider(
-                estimatedTokens = estimatedTokens,
-                taskType = detectTaskType(lastUserContent)
-            )
+            val provider = _uiState.value.selectedProvider
+                ?: llmRouter.selectProvider(
+                    estimatedTokens = estimatedTokens,
+                    taskType = detectTaskType(lastUserContent)
+                )
 
             val history = messages
                 .filter { it.id != lastAssistant.id }
@@ -152,16 +193,6 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Estrategia A — FULL (total <= 60k tokens):
-     *   Todo el texto de todos los documentos va al system prompt.
-     *   El LLM lee el documento entero.
-     *
-     * Estrategia B — RAG (total > 60k tokens):
-     *   Solo los chunks semánticamente más cercanos a la query.
-     *
-     * Retorna Triple(systemPrompt, estimatedTokens, ContextMode).
-     */
     private suspend fun buildContextForQuery(
         query: String,
         checkedDocs: List<DocumentNode>
@@ -245,7 +276,7 @@ class ChatViewModel @Inject constructor(
     private suspend fun collectInferenceStream(
         history: List<LlmMessage>,
         systemPrompt: String,
-        provider: com.fenix.ia.domain.model.ApiProvider
+        provider: ApiProvider
     ) {
         val assistantMessageId = UUID.randomUUID().toString()
         llmRouter.streamCompletion(
@@ -271,7 +302,6 @@ class ChatViewModel @Inject constructor(
                             )
                         )
                     }
-                    // INVARIANTE NODO-13: streamingBuffer siempre "" tras Done
                     _uiState.update { it.copy(isStreaming = false, streamingBuffer = "") }
                     _effects.send(ChatEffect.ScrollToBottom)
                 }

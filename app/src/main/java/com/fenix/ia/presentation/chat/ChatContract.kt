@@ -38,8 +38,11 @@ data class ChatUiState(
     val isLoading: Boolean = false
 )
 
+/**
+ * FASE 12: ScrollToBottom eliminado del sealed class.
+ * El scroll se maneja exclusivamente via LaunchedEffect(messages.size) en ChatScreen.
+ */
 sealed class ChatEffect {
     data class ShowError(val message: String) : ChatEffect()
-    object ScrollToBottom : ChatEffect()
     data class OpenFilePicker(val allowedMimeTypes: List<String>) : ChatEffect()
 }

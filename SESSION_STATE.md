@@ -4,7 +4,7 @@
 https://github.com/eligiansupeer-hash/fenix-ia-android
 
 ## Última sesión
-30 Abril 2026 — Sesión 12 (Hotfix build error ToolsViewModel)
+30 Abril 2026 — Sesión 13 (Hotfix build error ToolCallParser)
 
 ---
 
@@ -32,35 +32,51 @@ https://github.com/eligiansupeer-hash/fenix-ia-android
 | **E2** | ✅ COMPLETO |
 | **E3** | ✅ COMPLETO |
 | **E4** | ✅ COMPLETO — hotfix sesión 12 |
+| **F1** | ✅ COMPLETO — hotfix sesión 13 |
 
 ---
 
-## 🔧 Hotfix Sesión 12
+## 🔧 Hotfix Sesión 13
 
 ### Problema
 CI fallaba en `:app:compileDebugKotlin` con:
 ```
-e: ToolsViewModel.kt:90:43 Unresolved reference 'audit'
+e: ToolCallParser.kt:66:14 None of the following candidates is applicable
 ```
 
 ### Causa raíz
-`ToolsViewModel` llamaba `policy.audit(js)` y checkeaba `policyResult.isAllowed`, pero:
-1. `PolicyEngine` es un `object` de Kotlin (singleton estático) → no se puede inyectar con Hilt
-2. El método real es `PolicyEngine.evaluate()`, no `audit()`
-3. El campo retornado es `allowed`, no `isAllowed`
+`stripToolCalls` usaba `text.replace(Regex("..."))` sin el segundo argumento `replacement`.
+La firma correcta de Kotlin es `String.replace(regex: Regex, replacement: String)`.
 
 ### Fix aplicado
-- Eliminado `private val policy: PolicyEngine` del constructor de `ToolsViewModel`
-- Cambiado `policy.audit(js)` → `PolicyEngine.evaluate(js)` (llamada directa al object)
-- Cambiado `policyResult.isAllowed` → `policyResult.allowed`
+```kotlin
+// ANTES (error):
+text.replace(Regex("$OPEN_TAG[\\s\\S]*?$CLOSE_TAG")).trim()
+
+// DESPUÉS (correcto):
+text.replace(Regex("${Regex.escape(OPEN_TAG)}[\\s\\S]*?${Regex.escape(CLOSE_TAG)}"), "").trim()
+```
+Se agregó además `Regex.escape()` en ambos tags por seguridad (los `<` y `>` son seguros,
+pero es buena práctica cuando se insertan constantes en expresiones regex).
 
 | Archivo | Commit | Descripción |
 |---------|--------|-------------|
-| `presentation/tools/ToolsViewModel.kt` | `f288d74` | fix: PolicyEngine.evaluate() en lugar de audit() + quitar inyección de object |
+| `tools/ToolCallParser.kt` | `538c94a` | fix: replace(Regex, replacement) correcto |
 
 ---
 
 ## 🏁 TODOS LOS NODOS DEL MANUAL v2 COMPLETOS
+
+### Nodo F — Loop de tool-use real (sesión 12-13)
+
+| Archivo | Estado | Descripción |
+|---------|--------|-------------|
+| `tools/ToolCallParser.kt` | ✅ | Detecta/parsea `<tool_call>` del LLM |
+| `orchestrator/OrchestratorEngine.kt` | ✅ | Loop real: LLM → tools → LLM |
+| `orchestrator/OrchestratorEvent.kt` | ✅ | +ToolExecuted, +WorkflowFailed |
+| `presentation/workflow/WorkflowViewModel.kt` | ✅ | Muestra ToolExecuted en UI |
+| `presentation/tools/ToolsScreen.kt` | ✅ | UX sin JSON crudo al usuario |
+| `presentation/tools/ToolsViewModel.kt` | ✅ | executeNatural + clearResult |
 
 ### Fase 5 — IA Local On-Device (D1–D3)
 
@@ -81,7 +97,7 @@ e: ToolsViewModel.kt:90:43 Unresolved reference 'audit'
 | `presentation/FenixNavHost.kt` | `4cbff79` | 8 rutas finales |
 | `presentation/projects/ProjectDetailScreen.kt` | `599f4ce` | BottomAppBar 4 botones + FAB |
 | `presentation/tools/ToolsScreen.kt` | `98b4335` | Catálogo reactivo + creación IA |
-| `presentation/tools/ToolsViewModel.kt` | `f288d74` | **HOTFIX** PolicyEngine.evaluate() correcto |
+| `presentation/tools/ToolsViewModel.kt` | `f288d74` | HOTFIX PolicyEngine.evaluate() correcto |
 | `presentation/artifacts/ArtifactsViewModel.kt` | `5642a28` | Scan + export + filtros |
 | `presentation/artifacts/ArtifactsScreen.kt` | `d4b100e` | LazyColumn filtros + exportar |
 
@@ -99,8 +115,9 @@ e: ToolsViewModel.kt:90:43 Unresolved reference 'audit'
 | Room v2 con tabla `tools` | ✅ |
 | ToolSeeder siembra 14 tools al iniciar | ✅ |
 | ToolExecutor: read_file, create_file, RAG, sandbox, web, scrape | ✅ |
+| **Loop tool-use real: LLM detecta → ejecuta → continúa** | ✅ |
 | Sistema de agentes (6 roles + OrchestratorEngine + Blackboard) | ✅ |
-| WorkflowScreen con NodeGraphCanvas | ✅ |
+| WorkflowScreen con NodeGraphCanvas + ToolExecuted en log | ✅ |
 | Deep Research: DuckDuckGo + IterDRAG | ✅ |
 | ResearchScreen con log en tiempo real | ✅ |
 | IA Local on-device: LocalLlmEngine + MediaPipe | ✅ |
@@ -108,7 +125,7 @@ e: ToolsViewModel.kt:90:43 Unresolved reference 'audit'
 | Panel IA Local en Settings | ✅ |
 | FenixNavHost 8 rutas completas | ✅ |
 | ProjectDetailScreen BottomAppBar 4 nav + FAB | ✅ |
-| ToolsScreen catálogo reactivo + crear con IA | ✅ |
+| ToolsScreen catálogo reactivo + crear con IA (sin JSON crudo) | ✅ |
 | ArtifactsScreen árbol + filtros + exportar | ✅ |
 
 ---
@@ -125,6 +142,6 @@ e: ToolsViewModel.kt:90:43 Unresolved reference 'audit'
 ---
 
 ## Próximos pasos
-- ✅ CI debería pasar con el hotfix de ToolsViewModel
+- ✅ CI debería pasar con el hotfix de ToolCallParser
 - NODO-13 / NODO-14: Requieren dispositivo físico con ADB conectado
 - Release v2.0.0 en GitHub cuando CI esté verde

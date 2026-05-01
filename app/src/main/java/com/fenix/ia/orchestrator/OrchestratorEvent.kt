@@ -33,6 +33,16 @@ sealed class OrchestratorEvent {
         val issues: List<String>
     ) : OrchestratorEvent()
 
+    /**
+     * Un agente ejecutó una herramienta durante su loop de tool-use.
+     * La UI puede mostrar esto como "🔧 web_search → {result preview}"
+     */
+    data class ToolExecuted(
+        val toolName: String,
+        val argsJson: String,
+        val resultJson: String
+    ) : OrchestratorEvent()
+
     /** Todos los pasos completados. finalOutput es el resultado del último paso. */
     data class WorkflowDone(val finalOutput: String) : OrchestratorEvent()
 

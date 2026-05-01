@@ -2,6 +2,8 @@ package com.fenix.ia.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.fenix.ia.data.local.db.FenixDatabase
 import com.fenix.ia.data.local.db.dao.*
 import com.fenix.ia.data.local.objectbox.EmbeddingModel
@@ -21,6 +23,38 @@ import io.ktor.serialization.kotlinx.json.*
 import io.objectbox.BoxStore
 import javax.inject.Singleton
 
+/**
+ * Migración v1 → v2: crea la tabla tools.
+ *
+ * Se usa addMigrations() en lugar de fallbackToDestructiveMigration() para que
+ * las herramientas creadas por la IA (isUserGenerated = true) no se pierdan
+ * en actualizaciones de esquema.
+ */
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS tools (
+                id              TEXT    NOT NULL PRIMARY KEY,
+                name            TEXT    NOT NULL,
+                description     TEXT    NOT NULL,
+                inputSchema     TEXT    NOT NULL,
+                outputSchema    TEXT    NOT NULL,
+                permissions     TEXT    NOT NULL,
+                executionType   TEXT    NOT NULL,
+                jsBody          TEXT,
+                isEnabled       INTEGER NOT NULL DEFAULT 1,
+                isUserGenerated INTEGER NOT NULL DEFAULT 0,
+                createdAt       INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS index_tools_name ON tools(name)"
+        )
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
@@ -33,9 +67,9 @@ object AppModule {
             FenixDatabase::class.java,
             "fenix_ia_db"
         )
-        // v1 → v2: agrega tabla tools. En dev se destruye y recrea.
-        // En producción futura: reemplazar por addMigrations(MIGRATION_1_2).
-        .fallbackToDestructiveMigration()
+        // Migración explícita: preserva tools creadas por la IA al actualizar el esquema.
+        // Si se agregan tablas futuras, añadir MIGRATION_2_3, etc.
+        .addMigrations(MIGRATION_1_2)
         .build()
     }
 
@@ -43,7 +77,7 @@ object AppModule {
     @Provides fun provideChatDao(db: FenixDatabase)     = db.chatDao()
     @Provides fun provideMessageDao(db: FenixDatabase)  = db.messageDao()
     @Provides fun provideDocumentDao(db: FenixDatabase) = db.documentDao()
-    @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()   // ← NODO-A1
+    @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()
 
     // ── ObjectBox ─────────────────────────────────────────────────────────────
     @Provides

@@ -63,7 +63,7 @@ object ToolCallParser {
      * Es lo que se muestra al usuario o se pasa al siguiente agente.
      */
     fun stripToolCalls(text: String): String =
-        text.replace(Regex("$OPEN_TAG[\\s\\S]*?$CLOSE_TAG")).trim()
+        text.replace(Regex("${Regex.escape(OPEN_TAG)}[\\s\\S]*?${Regex.escape(CLOSE_TAG)}"), "").trim()
 
     // ── Privado ──────────────────────────────────────────────────────────────
 

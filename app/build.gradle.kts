@@ -70,6 +70,7 @@ dependencies {
 
     // Arquitectura
     implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.process)
     implementation(libs.navigation.compose)
 
     // Hilt DI
@@ -124,12 +125,7 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.mlkit.text.recognition)
 
-    // ── Web scraping / Deep Research ─────────────────────────────────────────
-    // WebResearcher usa stdlib Kotlin para parsing HTML (sin dependencias externas).
-    // Ksoup eliminado para evitar conflictos de classpath con Ktor.
-
     // ── IA Local On-Device (Fase 5) ───────────────────────────────────────────
-    // MediaPipe LLM Inference — Llama 3.2 1B Q4, solo activado en >= 4GB RAM
     implementation(libs.mediapipe.genai)
 
     // ── Tests ─────────────────────────────────────────────────────────────────

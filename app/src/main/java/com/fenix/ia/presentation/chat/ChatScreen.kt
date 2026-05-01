@@ -59,6 +59,11 @@ fun ChatScreen(
         viewModel.loadChat(chatId, projectId)
     }
 
+    /**
+     * FASE 12 — Mecanismo único de scroll automático.
+     * Reactivo al tamaño de la lista de mensajes. Elimina la colisión con
+     * el efecto ScrollToBottom que fue removido del ViewModel.
+     */
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.size - 1)
@@ -76,15 +81,11 @@ fun ChatScreen(
         }
     }
 
+    // FASE 12: colector de efectos sin caso ScrollToBottom (eliminado del sealed class)
     LaunchedEffect(Unit) {
         viewModel.effects.collectLatest { effect ->
             when (effect) {
-                is ChatEffect.ScrollToBottom -> {
-                    if (uiState.messages.isNotEmpty()) {
-                        listState.animateScrollToItem(uiState.messages.size - 1)
-                    }
-                }
-                is ChatEffect.ShowError -> snackbarHostState.showSnackbar(effect.message)
+                is ChatEffect.ShowError      -> snackbarHostState.showSnackbar(effect.message)
                 is ChatEffect.OpenFilePicker -> { /* handled in ProjectDetail */ }
             }
         }
@@ -128,7 +129,6 @@ fun ChatScreen(
         },
         bottomBar = {
             Column {
-                // Selector de proveedor — encima del input bar
                 ProviderSelector(
                     providers  = uiState.availableProviders,
                     selected   = uiState.selectedProvider,
@@ -222,7 +222,6 @@ private fun ProviderSelector(
             .padding(horizontal = 8.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Chip "Auto" — delega la elección al router
         item {
             FilterChip(
                 selected = selected == null,
@@ -374,7 +373,7 @@ private fun StreamingIndicator(
             Column(modifier = Modifier.padding(12.dp)) {
                 provider?.let {
                     Text(
-                        text = "⚡ ${it.displayName}",   // displayName en lugar de .name
+                        text = "⚡ ${it.displayName}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )

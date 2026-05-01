@@ -13,27 +13,23 @@
 | 7 | WorkManager secuencial OCR | ⏳ Pendiente |
 | 8 | Extractor XLSX streaming | ⏳ Pendiente |
 | 9 | Frenos anti-bucle agentes | ⏳ Pendiente |
-| 10 | TLS fingerprint / motor OkHttp | ✅ Completada |
+| 10 | TLS fingerprint / motor OkHttp | ✅ CI OK |
 | 11 | Reducer estado streaming abortado | ⏳ Pendiente |
 | 12 | Scroll automático Compose | ⏳ Pendiente |
 | 13 | Auditoría final compilación | ⏳ Pendiente |
 
 ## Sesión 1 — 1 Mayo 2026
 
-### Fase 10 — COMPLETADA
-**Problema:** `AppModule.kt` importaba `io.ktor.client.engine.cio.*` y usaba `requestTimeout` dentro del bloque `engine {}`, propiedad exclusiva del engine CIO que no existe en OkHttp. Esto causaba 3 errores de compilación:
-- `Unresolved reference 'cio'` (línea 19)
-- `Unresolved reference 'CIO'` (línea 93)  
-- `Unresolved reference 'requestTimeout'` (línea 100)
+### Fase 10 — COMPLETADA y VERIFICADA (CI verde)
+**Problema:** `AppModule.kt` importaba `io.ktor.client.engine.cio.*` y usaba `requestTimeout` dentro del bloque `engine {}`, propiedad exclusiva de CIO. 3 errores de compilación.
 
-**Solución aplicada (commit bba6278):**
-- Reemplazado import `cio.*` por `okhttp.*`
-- Migrado `HttpClient(CIO)` → `HttpClient(OkHttp)`
-- Eliminado bloque `engine { requestTimeout = ... }` (no válido en OkHttp)
-- Configurado `ConnectionSpec` con TLS 1.3/1.2 y cipher suites Chrome 120+
-- Timeouts movidos a `HttpTimeout` plugin (válido para todos los engines)
-- Agregado `ConnectionSpec.CLEARTEXT` para evitar bloqueos en HTTP plano
+**Solución (commit bba6278):**
+- Import `cio.*` → `okhttp.*`
+- `HttpClient(CIO)` → `HttpClient(OkHttp)`
+- Eliminado `engine { requestTimeout }` inválido en OkHttp
+- `ConnectionSpec` TLS 1.3/1.2 con cipher suites Chrome 120+
+- Timeouts en plugin `HttpTimeout`
 
-**WebResearcher.kt:** ya inyectaba `HttpClient` sin dependencia directa de CIO, no requirió cambios.
+**CI:** Action `testDebugUnitTest` pasó sin errores tras el fix. ✅
 
-**Próximo paso recomendado:** Ejecutar CI nuevamente para confirmar compilación limpia, luego proceder con fases pendientes en orden prioritario (Fase 1 si aún hay errores Hilt, o continuar con el backlog).
+**Próxima sesión:** Continuar con Fase 1 (Hilt/Room) o cualquier fase del backlog según prioridad.

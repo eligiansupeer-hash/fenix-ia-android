@@ -14,16 +14,11 @@ tensorflowLite = "2.16.1"
 junit5 = "5.11.3"
 junit4 = "4.13.2"
 mockk = "1.13.13"
-# Apache POI — extracción texto DOCX (R-04: sin renderizado, solo texto)
 apachePoi = "5.3.0"
 commonsCompress = "1.27.1"
-# PdfBox Android — extrae texto nativo de PDFs sin renderizar bitmaps (R-04 compliant)
 pdfboxAndroid = "2.0.27.0"
-# ML Kit Text Recognition — OCR para PDFs escaneados
 mlkitTextRecognition = "16.0.0"
-# Ksoup — parser HTML puro Kotlin (solo parsing, sin HTTP propio — Ktor hace el HTTP)
 ksoup = "0.1.5"
-# MediaPipe LLM Inference — IA local on-device (Llama 3.2 1B Q4, solo >= 4GB RAM)
 mediapipe = "0.10.14"
 
 [libraries]
@@ -57,7 +52,7 @@ room-compiler = { group = "androidx.room", name = "room-compiler", version.ref =
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 # Ktor
 ktor-client-android = { group = "io.ktor", name = "ktor-client-android", version.ref = "ktor" }
-ktor-client-cio = { group = "io.ktor", name = "ktor-client-cio", version.ref = "ktor" }
+ktor-client-okhttp = { group = "io.ktor", name = "ktor-client-okhttp", version.ref = "ktor" }
 ktor-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor" }
 ktor-serialization-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
 ktor-logging = { group = "io.ktor", name = "ktor-client-logging", version.ref = "ktor" }
@@ -78,9 +73,9 @@ commons-compress = { group = "org.apache.commons", name = "commons-compress", ve
 pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
 # ML Kit
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
-# Ksoup — SOLO el artefacto base "ksoup" (parser HTML puro, sin cliente HTTP propio)
+# Ksoup
 ksoup = { group = "com.fleeksoft.ksoup", name = "ksoup", version.ref = "ksoup" }
-# MediaPipe LLM Inference — inferencia on-device (Llama 3.2 1B Q4, >= 4GB RAM)
+# MediaPipe
 mediapipe-genai = { module = "com.google.mediapipe:tasks-genai", version.ref = "mediapipe" }
 # Tests
 junit5 = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit5" }

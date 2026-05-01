@@ -8,6 +8,7 @@ sealed class ChatIntent {
     data class SendMessage(val content: String, val attachmentIds: List<String> = emptyList()) : ChatIntent()
     data class ToggleDocumentCheckpoint(val documentId: String) : ChatIntent()
     data class LoadChat(val chatId: String) : ChatIntent()
+    data class SelectProvider(val provider: ApiProvider?) : ChatIntent()  // null = auto-selección
     object StopStreaming : ChatIntent()
     object RegenerateLastMessage : ChatIntent()
     object DismissError : ChatIntent()
@@ -15,14 +16,10 @@ sealed class ChatIntent {
 
 /**
  * Modo de inyección de contexto documental al LLM.
- * Se muestra en la UI para que el usuario sepa cómo se están leyendo sus documentos.
  */
 enum class ContextMode {
-    /** Sin documentos seleccionados — solo conversación. */
     NONE,
-    /** Texto completo de todos los documentos seleccionados — el LLM los lee enteros. */
     FULL,
-    /** RAG semántico — los documentos son muy largos, se inyectan solo los fragmentos relevantes. */
     RAG
 }
 
@@ -32,9 +29,11 @@ data class ChatUiState(
     val isStreaming: Boolean = false,
     val streamingBuffer: String = "",
     val activeProvider: ApiProvider? = null,
+    val selectedProvider: ApiProvider? = null,          // null = auto-selección por el router
+    val availableProviders: List<ApiProvider> = emptyList(),
     val contextMode: ContextMode = ContextMode.NONE,
-    val contextDocumentCount: Int = 0,      // Cuántos documentos están siendo leídos
-    val contextTokenCount: Int = 0,         // Tokens totales del contexto (estimado)
+    val contextDocumentCount: Int = 0,
+    val contextTokenCount: Int = 0,
     val error: String? = null,
     val isLoading: Boolean = false
 )

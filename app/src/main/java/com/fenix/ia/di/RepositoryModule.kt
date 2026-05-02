@@ -29,4 +29,7 @@ abstract class RepositoryModule {
 
     @Binds @Singleton
     abstract fun bindToolRepository(impl: ToolRepositoryImpl): ToolRepository
+
+    @Binds @Singleton
+    abstract fun bindUserPrefsRepository(impl: UserPrefsRepositoryImpl): UserPrefsRepository
 }

@@ -1,0 +1,62 @@
+name: Restore Gradle Wrapper
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  restore-wrapper:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Check if gradle-wrapper.jar is missing
+        id: check_jar
+        run: |
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "jar_missing=true" >> $GITHUB_OUTPUT
+            echo "::warning::gradle-wrapper.jar MISSING — will regenerate"
+          else
+            echo "jar_missing=false" >> $GITHUB_OUTPUT
+            echo "gradle-wrapper.jar already present — skipping"
+          fi
+
+      - name: Set up Java 17
+        if: steps.check_jar.outputs.jar_missing == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download Gradle 4.10.3 to bootstrap wrapper generation
+        if: steps.check_jar.outputs.jar_missing == 'true'
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-4.10.3-bin.zip \
+               -O /tmp/gradle-bootstrap.zip
+          unzip -q /tmp/gradle-bootstrap.zip -d /tmp/gradle-bootstrap
+
+      - name: Generate gradle wrapper for 8.9
+        if: steps.check_jar.outputs.jar_missing == 'true'
+        run: |
+          /tmp/gradle-bootstrap/gradle-4.10.3/bin/gradle wrapper \
+            --gradle-version 8.9 \
+            --distribution-type bin
+          chmod +x gradlew
+          echo "--- generated files ---"
+          ls -la gradle/wrapper/
+          sha256sum gradle/wrapper/gradle-wrapper.jar
+
+      - name: Commit restored wrapper
+        if: steps.check_jar.outputs.jar_missing == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gradle/wrapper/gradle-wrapper.jar gradlew
+          git diff --cached --quiet && echo "Nothing to commit" && exit 0
+          git commit -m "fix: restore executable gradle-wrapper.jar [skip ci]"
+          git push

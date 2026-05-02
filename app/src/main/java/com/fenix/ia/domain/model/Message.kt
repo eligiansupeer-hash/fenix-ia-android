@@ -6,7 +6,8 @@ data class Message(
     val role: MessageRole,
     val content: String,
     val timestamp: Long,
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    val attachmentUris: List<String> = emptyList() // P6: adjuntos del mensaje
 )
 
 enum class MessageRole { USER, ASSISTANT, SYSTEM }

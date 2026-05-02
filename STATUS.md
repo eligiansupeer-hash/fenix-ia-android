@@ -22,3 +22,11 @@
 - [x] R2_BASE_URL corregida en UpdateChecker.kt
 - [x] CI job release-r2 completó exitosamente
 - [ ] OTA verificada en dispositivo real con APK nuevo
+
+---
+
+## Sesión 18 — Restauración gradle-wrapper.jar
+
+- `gradle-wrapper.jar` ausente en `gradle/wrapper/`
+- Workflow `restore-gradle-wrapper.yml` triggereado via push
+- Pendiente: confirmar que el .jar quedó commiteado por el bot

@@ -17,10 +17,26 @@ class ChatRepositoryImpl @Inject constructor(
     override fun getChatsByProject(projectId: String): Flow<List<Chat>> =
         dao.getChatsByProject(projectId).map { entities -> entities.map { it.toDomain() } }
 
+    // P4: Chats globales (projectId IS NULL en BD → "" en dominio)
+    fun getGeneralChats(): Flow<List<Chat>> =
+        dao.getGeneralChats().map { entities -> entities.map { it.toDomain() } }
+
     override suspend fun createChat(chat: Chat) = dao.insertChat(chat.toEntity())
 
     override suspend fun deleteChat(chatId: String) = dao.deleteChat(chatId)
 
-    private fun ChatEntity.toDomain() = Chat(id = id, projectId = projectId, title = title, createdAt = createdAt)
-    private fun Chat.toEntity() = ChatEntity(id = id, projectId = projectId, title = title, createdAt = createdAt)
+    // P4: "" en dominio → NULL en BD; NULL en BD → "" en dominio
+    private fun ChatEntity.toDomain() = Chat(
+        id = id,
+        projectId = projectId ?: "",
+        title = title,
+        createdAt = createdAt
+    )
+
+    private fun Chat.toEntity() = ChatEntity(
+        id = id,
+        projectId = projectId.ifEmpty { null },
+        title = title,
+        createdAt = createdAt
+    )
 }

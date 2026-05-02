@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.*
+import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.HttpHeaders
@@ -33,10 +34,9 @@ import javax.inject.Singleton
  * Modelo: Gemma 2B Q4 (~1.5 GB), descargado bajo demanda desde storage.googleapis.com.
  * Solo se activa en dispositivos con >= 3500 MB RAM total (aprox 4 GB).
  *
- * FASE 6 — Ciclo de vida nativo:
- *   Implementa DefaultLifecycleObserver y se registra en ProcessLifecycleOwner al init.
- *   onStop  → libera el modelo (evita que el LMK destruya el proceso).
- *   onStart → recarga el modelo si hay memoria suficiente y estaba descargado.
+ * FASE 6 — Ciclo de vida nativo (DefaultLifecycleObserver sobre ProcessLifecycleOwner)
+ * P1 FIX — downloadModel usa timeout INFINITO para evitar SocketTimeoutException en
+ *           binarios grandes, sobreescribiendo el timeout global de 120s de AppModule.
  */
 @Singleton
 class LocalLlmEngine @Inject constructor(
@@ -55,14 +55,8 @@ class LocalLlmEngine @Inject constructor(
     }
 
     private var inference: LlmInference? = null
-
-    /** Scope para operaciones de ciclo de vida (init/release del modelo). */
     private val lifecycleScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /**
-     * Slot del listener activo para la llamada en curso.
-     * @Volatile garantiza visibilidad entre el hilo de MediaPipe y el de la corrutina.
-     */
     @Volatile
     private var activeListener: ((String?, Boolean) -> Unit)? = null
 
@@ -70,17 +64,11 @@ class LocalLlmEngine @Inject constructor(
     val isReady: StateFlow<Boolean> = _isReady
 
     init {
-        // Registrar observer en el ciclo de vida del proceso completo de la app
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
     }
 
     // ── DefaultLifecycleObserver ─────────────────────────────────────────────
 
-    /**
-     * La app pasa a background (o el usuario cambia de app).
-     * Liberar el modelo reduce la presión de memoria y previene que el LMK
-     * destruya el proceso de FENIX IA.
-     */
     override fun onStop(owner: LifecycleOwner) {
         activeListener = null
         inference?.close()
@@ -88,27 +76,19 @@ class LocalLlmEngine @Inject constructor(
         _isReady.value = false
     }
 
-    /**
-     * La app vuelve a primer plano.
-     * Recargar el modelo si estaba descargado y hay RAM disponible.
-     * Se lanza en lifecycleScope para no bloquear el Main thread.
-     */
     override fun onStart(owner: LifecycleOwner) {
         if (inference == null && isModelDownloaded() && deviceHasSufficientMemory()) {
             lifecycleScope.launch { initializeModel() }
         }
     }
 
-    // ── Capacidad y estado ───────────────────────────────────────────────────
+    // ── Capacidad ────────────────────────────────────────────────────────────
 
-    /** Devuelve true si el dispositivo tiene RAM suficiente para cargar el modelo. */
     fun isCapable(): Boolean = deviceHasSufficientMemory()
 
-    /** Retorna true si el archivo del modelo existe en filesDir. */
     fun isModelDownloaded(): Boolean =
         File(context.filesDir, "$MODEL_DIR/$MODEL_FILE").exists()
 
-    /** Consulta ActivityManager para verificar RAM disponible. */
     private fun deviceHasSufficientMemory(): Boolean {
         val am = context.getSystemService(ActivityManager::class.java)
         val mi = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
@@ -117,11 +97,6 @@ class LocalLlmEngine @Inject constructor(
 
     // ── Inicialización ───────────────────────────────────────────────────────
 
-    /**
-     * Inicializa LlmInference con el modelo ya descargado.
-     * Registra el PartialResultListener en las opciones — delega al slot activeListener.
-     * @return true si la inicialización fue exitosa.
-     */
     suspend fun initialize(): Boolean = initializeModel()
 
     private suspend fun initializeModel(): Boolean = withContext(Dispatchers.IO) {
@@ -149,10 +124,6 @@ class LocalLlmEngine @Inject constructor(
 
     // ── Generación (streaming) ───────────────────────────────────────────────
 
-    /**
-     * FASE 5 — Streaming genuino via slot activeListener + generateResponseAsync(String).
-     * Contrato con ChatViewModel: mismo Flow<String> que el streaming SSE remoto.
-     */
     fun generate(prompt: String): Flow<String> = callbackFlow {
         val model = inference
         if (model == null) {
@@ -168,12 +139,13 @@ class LocalLlmEngine @Inject constructor(
         awaitClose { activeListener = null }
     }.flowOn(Dispatchers.Default)
 
-    // ── Descarga ─────────────────────────────────────────────────────────────
+    // ── Descarga — CORRECCIÓN P1 ─────────────────────────────────────────────
 
     /**
-     * Descarga el modelo usando Ktor HttpClient.
-     * Reporta progreso real [0..1] via onProgress.
-     * Usa archivo .tmp para evitar que un archivo parcial quede como "descargado".
+     * Descarga el modelo binario (~1.5 GB).
+     * CORRECCIÓN P1: se sobreescribe requestTimeoutMillis con INFINITE_TIMEOUT_MS
+     * a nivel de bloque `timeout {}` local, eludiendo el límite global de 120s
+     * definido en AppModule que causaba SocketTimeoutException.
      */
     suspend fun downloadModel(
         url: String,
@@ -183,7 +155,10 @@ class LocalLlmEngine @Inject constructor(
         val destFile = File(destDir, MODEL_FILE)
         val tmpFile  = File(destDir, "$MODEL_FILE.tmp")
         try {
-            httpClient.prepareGet(url).execute { response ->
+            httpClient.prepareGet(url) {
+                // Override local: timeout infinito SOLO para esta descarga pesada
+                timeout { requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS }
+            }.execute { response ->
                 if (!response.status.isSuccess()) return@execute
                 val totalBytes = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
                 var downloaded = 0L
@@ -213,13 +188,8 @@ class LocalLlmEngine @Inject constructor(
         }
     }
 
-    // ── Liberación explícita ─────────────────────────────────────────────────
+    // ── Liberación ───────────────────────────────────────────────────────────
 
-    /**
-     * Libera el modelo de la memoria nativa.
-     * El observer onStop() lo invoca automáticamente al ir a background.
-     * SettingsViewModel puede invocarlo explícitamente si el usuario lo desactiva.
-     */
     fun release() {
         activeListener = null
         inference?.close()

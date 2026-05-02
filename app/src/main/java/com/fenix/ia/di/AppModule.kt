@@ -29,11 +29,6 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
 
-// ── Calificadores para los dos clientes HTTP ─────────────────────────────────
-// @Named("api")      → LLM, búsqueda web, GitHub — timeout 120s request / 90s socket
-// @Named("download") → descarga modelo ~1.5 GB / APK OTA — timeouts infinitos
-
-// ── Migración v1 → v2: crea tabla tools ──────────────────────────────────────
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(database: SupportSQLiteDatabase) {
         database.execSQL(
@@ -59,10 +54,8 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-// ── Migración v2 → v3: P4 chats nullable, P5 chat_tools, P6 attachmentUris ──
 val MIGRATION_2_3 = object : Migration(2, 3) {
     override fun migrate(database: SupportSQLiteDatabase) {
-        // P4: Recrear tabla chats con projectId nullable (eliminar FK estricta)
         database.execSQL(
             "CREATE TABLE IF NOT EXISTS `chats_new` " +
             "(`id` TEXT NOT NULL, `projectId` TEXT, `title` TEXT NOT NULL, " +
@@ -77,8 +70,6 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         database.execSQL(
             "CREATE INDEX IF NOT EXISTS `index_chats_projectId` ON `chats` (`projectId`)"
         )
-
-        // P5: Tabla N:M chat_tools
         database.execSQL(
             "CREATE TABLE IF NOT EXISTS `chat_tools` " +
             "(`chatId` TEXT NOT NULL, `toolId` TEXT NOT NULL, `isEnabled` INTEGER NOT NULL, " +
@@ -92,8 +83,6 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         database.execSQL(
             "CREATE INDEX IF NOT EXISTS `index_chat_tools_toolId` ON `chat_tools` (`toolId`)"
         )
-
-        // P6: Columna attachmentUris en messages
         database.execSQL("ALTER TABLE `messages` ADD COLUMN `attachmentUris` TEXT")
     }
 }
@@ -105,11 +94,7 @@ object AppModule {
     @Provides
     @Singleton
     fun provideRoomDatabase(@ApplicationContext context: Context): FenixDatabase {
-        return Room.databaseBuilder(
-            context,
-            FenixDatabase::class.java,
-            "fenix_ia_db"
-        )
+        return Room.databaseBuilder(context, FenixDatabase::class.java, "fenix_ia_db")
             .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
     }
@@ -121,7 +106,6 @@ object AppModule {
     @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()
     @Provides fun provideChatToolDao(db: FenixDatabase) = db.chatToolDao()
 
-    // ── ObjectBox ─────────────────────────────────────────────────────────────
     @Provides
     @Singleton
     fun provideObjectBoxStore(@ApplicationContext context: Context): BoxStore {
@@ -129,7 +113,6 @@ object AppModule {
         return ObjectBoxStore.store
     }
 
-    // ── TLS spec compartido — Chrome 120+ cipher suites ──────────────────────
     private fun buildTlsSpec(): ConnectionSpec =
         ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
             .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2)
@@ -143,9 +126,6 @@ object AppModule {
             )
             .build()
 
-    // ── Cliente API — LLM / búsqueda / GitHub ─────────────────────────────────
-    // socketTimeoutMillis = 90s  (DDG puede ser lento pero no más de eso)
-    // requestTimeoutMillis = 120s (respuestas LLM streaming largas)
     @Provides
     @Singleton
     @Named("api")
@@ -156,7 +136,7 @@ object AppModule {
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000L
                 connectTimeoutMillis = 15_000L
-                socketTimeoutMillis  = 90_000L   // FIX: era 120s; 90s es suficiente para DDG
+                socketTimeoutMillis  = 90_000L
             }
             engine {
                 config {
@@ -166,25 +146,22 @@ object AppModule {
         }
     }
 
-    // ── Cliente de descarga — modelo LLM (~1.5 GB) y APK OTA ─────────────────
-    // Todos los timeouts a INFINITO: las descargas pesadas deben poder tomar horas
-    // sin que el socket ni el request sean interrumpidos por el cliente HTTP.
     @Provides
     @Singleton
     @Named("download")
     fun provideDownloadKtorClient(): HttpClient {
         val tlsSpec = buildTlsSpec()
-        // OkHttpClient raw con timeouts 0 (= infinito) para el engine
         val okHttp = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)       // conexión inicial: 30s es razonable
-            .readTimeout(0, TimeUnit.MILLISECONDS)      // FIX: sin timeout de lectura (streaming)
-            .writeTimeout(0, TimeUnit.MILLISECONDS)     // FIX: sin timeout de escritura
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .writeTimeout(0, TimeUnit.MILLISECONDS)
+            .followRedirects(true)          // FIX: storage.googleapis.com redirige con 302
+            .followSslRedirects(true)       // FIX: cubre también HTTP→HTTPS redirects
             .connectionSpecs(listOf(tlsSpec, ConnectionSpec.CLEARTEXT))
             .build()
 
         return HttpClient(OkHttp) {
             install(ContentNegotiation) { json() }
-            // FIX: HttpTimeout plugin con INFINITE en todos los valores
             install(HttpTimeout) {
                 requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
                 connectTimeoutMillis = 30_000L
@@ -196,8 +173,6 @@ object AppModule {
         }
     }
 
-    // ── Proveedor del cliente principal (sin qualifier) para inyección legacy ─
-    // Redirige al cliente API para no romper clases que inyectan HttpClient directamente.
     @Provides
     @Singleton
     fun provideKtorClient(@Named("api") apiClient: HttpClient): HttpClient = apiClient

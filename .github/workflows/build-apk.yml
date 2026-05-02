@@ -73,8 +73,18 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Generar gradle-wrapper.jar si falta
+        run: |
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "gradle-wrapper.jar no encontrado — regenerando con 'gradle wrapper'"
+            gradle wrapper --gradle-version 8.9
+          fi
+
+      - name: Permisos gradlew
+        run: chmod +x ./gradlew
+
       - name: Compilar
-        run: gradle compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
+        run: ./gradlew compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
 
       - name: Verificar API keys hardcodeadas
         if: success()
@@ -116,8 +126,17 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Generar gradle-wrapper.jar si falta
+        run: |
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            gradle wrapper --gradle-version 8.9
+          fi
+
+      - name: Permisos gradlew
+        run: chmod +x ./gradlew
+
       - name: Tests JVM
-        run: gradle testDebugUnitTest --no-daemon --continue
+        run: ./gradlew testDebugUnitTest --no-daemon --continue
 
       - name: Subir reporte
         if: always()
@@ -150,8 +169,17 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Generar gradle-wrapper.jar si falta
+        run: |
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            gradle wrapper --gradle-version 8.9
+          fi
+
+      - name: Permisos gradlew
+        run: chmod +x ./gradlew
+
       - name: Build APK
-        run: gradle assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Subir APK artifact
         uses: actions/upload-artifact@v4

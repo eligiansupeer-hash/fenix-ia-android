@@ -13,17 +13,20 @@ on:
 #   Job 2 — compile       → compileDebugKotlin
 #   Job 3 — unit-tests    → testDebugUnitTest   (solo si compile pasa)
 #   Job 4 — build-apk     → assembleDebug       (solo si tests pasan)
-#   Job 5 — release       → GitHub Release + APK asset para OTA  (solo en push a main)
+#   Job 5 — release       → Sube APK + version.json a Cloudflare R2 (OTA estable)
 #
-# versionCode se incrementa +1 automáticamente en cada push a main.
-# versionName sigue el formato "1.0.{versionCode}".
-# UpdateChecker.kt consulta la GitHub Releases API para detectar actualizaciones.
+# DISTRIBUCIÓN OTA via Cloudflare R2:
+#   - APK publicado en: https://pub-<HASH>.r2.dev/fenix-ia-latest.apk
+#   - Metadata en:      https://pub-<HASH>.r2.dev/version.json
+#   - URLs permanentes, sin TTL, sin tokens presignados → descarga estable.
+#   - Secrets requeridos: CF_ACCOUNT_ID, CF_API_TOKEN, CF_R2_BUCKET_NAME,
+#                         CF_R2_PUBLIC_URL (URL pública del bucket, sin trailing slash)
 # ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
-  # JOB 1: Auto-incremento de versionCode (solo en push a main, no en PRs)
+  # JOB 1: Auto-incremento de versionCode
   # ──────────────────────────────────────────────────────────────────────────
   bump-version:
     name: "🔢 Incrementar versionCode"
@@ -46,29 +49,18 @@ jobs:
         id: bump
         run: |
           FILE="app/build.gradle.kts"
-
-          # Leer versionCode actual
           CURRENT=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' "$FILE" | head -1)
           if [ -z "$CURRENT" ]; then
             echo "::error::No se pudo leer versionCode de $FILE"
             exit 1
           fi
-
-          # Incrementar
           NEW=$(( CURRENT + 1 ))
           NEW_NAME="1.0.${NEW}"
-
           echo "🔢 versionCode: $CURRENT → $NEW"
-          echo "📛 versionName: → $NEW_NAME"
-
-          # Parchar el archivo
           sed -i "s/versionCode\s*=\s*${CURRENT}/versionCode = ${NEW}/" "$FILE"
           sed -i "s/versionName\s*=\s*\"[^\"]*\"/versionName = \"${NEW_NAME}\"/" "$FILE"
-
-          # Verificar el parche
           grep "versionCode" "$FILE"
           grep "versionName" "$FILE"
-
           echo "version_code=$NEW" >> $GITHUB_OUTPUT
           echo "version_name=$NEW_NAME" >> $GITHUB_OUTPUT
 
@@ -82,7 +74,6 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
   # JOB 2: Compilación Kotlin
-  # Depende de bump-version en push a main; corre directamente en PRs.
   # ──────────────────────────────────────────────────────────────────────────
   compile:
     name: "🔨 Compilar Kotlin"
@@ -94,7 +85,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Después del commit de bump, aseguramos que tomamos el código actualizado
           ref: main
 
       - name: JDK 17 (Temurin)
@@ -111,7 +101,7 @@ jobs:
       - name: Compilar (compileDebugKotlin)
         run: gradle compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
 
-      - name: Verificar API keys hardcodeadas (AGENTS.md)
+      - name: Verificar API keys hardcodeadas
         if: success()
         run: |
           if grep -r --include="*.kt" \
@@ -129,11 +119,6 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           grep -E "^e: |error:" /tmp/compile.log | head -60 >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Resumen — compilación OK
-        if: success()
-        run: |
-          echo "### ✅ Compilación Kotlin exitosa" >> $GITHUB_STEP_SUMMARY
 
   # ──────────────────────────────────────────────────────────────────────────
   # JOB 3: Tests unitarios JVM
@@ -215,31 +200,35 @@ jobs:
       - name: Build APK Debug
         run: gradle assembleDebug --no-daemon
 
-      - name: Subir APK como artifact (backup)
-        uses: actions/upload-artifact@v4
-        with:
-          name: "fenix-ia-debug-${{ github.sha }}"
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 14
-
-      - name: Guardar APK para release
+      - name: Subir APK como artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-for-release
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 1
 
+      - name: Backup APK (14 días)
+        uses: actions/upload-artifact@v4
+        with:
+          name: "fenix-ia-debug-${{ github.sha }}"
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
   # ──────────────────────────────────────────────────────────────────────────
-  # JOB 5: Publicar GitHub Release con APK como asset
-  # Solo en push a main. Tag format: "v{versionCode}" (siempre incremental).
+  # JOB 5: Publicar en Cloudflare R2 (OTA estable)
+  #
+  # Secrets requeridos en el repositorio:
+  #   CF_ACCOUNT_ID   → ID de cuenta Cloudflare (Settings → Account ID)
+  #   CF_API_TOKEN    → API token con permisos R2:Edit
+  #   CF_R2_BUCKET    → nombre del bucket: fenix-ia-releases
+  #   CF_R2_PUBLIC_URL → URL pública del bucket SIN trailing slash
+  #                      Ej: https://pub-xxxxxxxxxxxxxxxx.r2.dev
   # ──────────────────────────────────────────────────────────────────────────
-  release:
-    name: "🚀 Publicar Release OTA"
+  release-r2:
+    name: "☁️ Publicar en Cloudflare R2"
     runs-on: ubuntu-latest
     needs: [bump-version, build-apk]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout
@@ -247,17 +236,16 @@ jobs:
         with:
           ref: main
 
-      - name: Leer versionCode actualizado de build.gradle.kts
+      - name: Leer versión desde build.gradle.kts
         id: version
         run: |
           VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -1)
           VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "✅ versionCode=$VERSION_CODE versionName=$VERSION_NAME tag=v$VERSION_CODE"
+          echo "✅ versionCode=$VERSION_CODE versionName=$VERSION_NAME"
 
-      - name: Descargar APK del job anterior
+      - name: Descargar APK
         uses: actions/download-artifact@v4
         with:
           name: apk-for-release
@@ -266,54 +254,60 @@ jobs:
       - name: Renombrar APK con versión
         run: |
           mv ./apk-output/app-debug.apk \
-             ./apk-output/fenix-ia-v${{ steps.version.outputs.version_code }}.apk
+             ./apk-output/fenix-ia-latest.apk
 
-      - name: Eliminar release anterior con mismo tag (si existe)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          gh release delete "$TAG" --yes 2>/dev/null || true
-          git push --delete origin "$TAG" 2>/dev/null || true
+      - name: Instalar wrangler
+        run: npm install -g wrangler@latest
 
-      - name: Crear GitHub Release con APK
+      - name: Subir APK a R2
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CF_API_TOKEN }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
+          wrangler r2 object put \
+            "${{ secrets.CF_R2_BUCKET }}/fenix-ia-latest.apk" \
+            --file ./apk-output/fenix-ia-latest.apk \
+            --content-type "application/vnd.android.package-archive"
+
+      - name: Generar y subir version.json
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CF_API_TOKEN }}
+        run: |
           VERSION_CODE="${{ steps.version.outputs.version_code }}"
           VERSION_NAME="${{ steps.version.outputs.version_name }}"
-          COMMIT_MSG=$(git log -1 --pretty=%B | head -5)
+          PUBLIC_URL="${{ secrets.CF_R2_PUBLIC_URL }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -3 | tr '\n' ' ')
           SHORT_SHA="${{ github.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
 
-          gh release create "$TAG" \
-            ./apk-output/fenix-ia-v${VERSION_CODE}.apk \
-            --title "Fenix IA v${VERSION_NAME} (build ${VERSION_CODE})" \
-            --notes "## Fenix IA v${VERSION_NAME}
+          cat > version.json <<EOF
+          {
+            "versionCode": ${VERSION_CODE},
+            "versionName": "${VERSION_NAME}",
+            "apkUrl": "${PUBLIC_URL}/fenix-ia-latest.apk",
+            "notes": "${COMMIT_MSG}",
+            "sha": "${SHORT_SHA}"
+          }
+          EOF
 
-          **Build:** \`${VERSION_CODE}\` | **Commit:** \`${SHORT_SHA}\`
+          echo "📋 version.json:"
+          cat version.json
 
-          ### Cambios
-          ${COMMIT_MSG}
-
-          ### Instalar
-          Desde la app: Configuración → Actualización → Verificar nueva versión
-
-          Manual vía ADB:
-          \`\`\`
-          adb install -r fenix-ia-v${VERSION_CODE}.apk
-          \`\`\`" \
-            --latest
+          wrangler r2 object put \
+            "${{ secrets.CF_R2_BUCKET }}/version.json" \
+            --file version.json \
+            --content-type "application/json"
 
       - name: Resumen final
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          echo "### 🚀 Release publicado" >> $GITHUB_STEP_SUMMARY
+          PUBLIC_URL="${{ secrets.CF_R2_PUBLIC_URL }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
+          echo "### ☁️ Release R2 publicado" >> $GITHUB_STEP_SUMMARY
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | \`$TAG\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| versionCode | \`${{ steps.version.outputs.version_code }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| URL | https://github.com/eligiansupeer-hash/fenix-ia-android/releases/tag/$TAG |" >> $GITHUB_STEP_SUMMARY
+          echo "| versionCode | \`$VERSION_CODE\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| APK | \`${PUBLIC_URL}/fenix-ia-latest.apk\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Metadata | \`${PUBLIC_URL}/version.json\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "UpdateChecker detectará esta versión en el próximo check desde la app." >> $GITHUB_STEP_SUMMARY
+          echo "✅ URL estable sin TTL — descarga no se corta por token expirado." >> $GITHUB_STEP_SUMMARY

@@ -34,7 +34,6 @@ import com.fenix.ia.domain.model.Message
 import com.fenix.ia.domain.model.MessageRole
 import kotlinx.coroutines.flow.collectLatest
 
-// ── Extensión de display name para el enum ApiProvider ───────────────────────
 val ApiProvider.displayName: String
     get() = when (this) {
         ApiProvider.GEMINI          -> "Gemini"
@@ -57,9 +56,8 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showDocPanel by remember { mutableStateOf(false) }
-    var showToolSheet by remember { mutableStateOf(false) }  // P5
+    var showToolSheet by remember { mutableStateOf(false) }
 
-    // P6: lanzador para selección múltiple de archivos
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
@@ -68,26 +66,17 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(chatId) {
-        viewModel.loadChat(chatId, projectId)
-    }
+    LaunchedEffect(chatId) { viewModel.loadChat(chatId, projectId) }
 
-    /**
-     * FASE 12 — Mecanismo único de scroll automático.
-     */
+    // FASE 12 — scroll automático
     LaunchedEffect(uiState.messages.size) {
-        if (uiState.messages.isNotEmpty()) {
+        if (uiState.messages.isNotEmpty())
             listState.animateScrollToItem(uiState.messages.size - 1)
-        }
     }
 
     LaunchedEffect(uiState.error) {
         uiState.error?.let { errorMsg ->
-            snackbarHostState.showSnackbar(
-                message = errorMsg,
-                actionLabel = "OK",
-                duration = SnackbarDuration.Long
-            )
+            snackbarHostState.showSnackbar(errorMsg, actionLabel = "OK", duration = SnackbarDuration.Long)
             viewModel.processIntent(ChatIntent.DismissError)
         }
     }
@@ -96,39 +85,33 @@ fun ChatScreen(
         viewModel.effects.collectLatest { effect ->
             when (effect) {
                 is ChatEffect.ShowError      -> snackbarHostState.showSnackbar(effect.message)
-                is ChatEffect.OpenFilePicker -> {
-                    filePickerLauncher.launch(
-                        effect.allowedMimeTypes.toTypedArray().ifEmpty { arrayOf("*/*") }
-                    )
-                }
+                is ChatEffect.OpenFilePicker ->
+                    filePickerLauncher.launch(effect.allowedMimeTypes.toTypedArray().ifEmpty { arrayOf("*/*") })
             }
         }
     }
 
-    // P5: BottomSheet de selección de herramientas
     if (showToolSheet) {
         ChatToolSelectorSheet(
             allTools       = uiState.allTools,
             enabledToolIds = uiState.enabledToolIds,
-            onToggle       = { toolId -> viewModel.processIntent(ChatIntent.ToggleTool(toolId)) },
+            onToggle       = { viewModel.processIntent(ChatIntent.ToggleTool(it)) },
             onDismiss      = { showToolSheet = false }
         )
     }
 
     Scaffold(
-        modifier = Modifier.imePadding(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        modifier      = Modifier.imePadding(),
+        snackbarHost  = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text("Chat", style = MaterialTheme.typography.titleMedium)
-                        uiState.activeProvider?.let { provider ->
-                            Text(
-                                text = "⚡ ${provider.displayName}",
+                        uiState.activeProvider?.let {
+                            Text("⚡ ${it.displayName}",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                                color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 },
@@ -138,27 +121,21 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // P5: botón de herramientas
-                    BadgedBox(
-                        badge = {
-                            val count = uiState.enabledToolIds.size
-                            if (count > 0) Badge { Text("$count") }
-                        }
-                    ) {
+                    BadgedBox(badge = {
+                        if (uiState.enabledToolIds.isNotEmpty())
+                            Badge { Text("${uiState.enabledToolIds.size}") }
+                    }) {
                         IconButton(onClick = { showToolSheet = true }) {
-                            Icon(Icons.Default.Build, contentDescription = "Herramientas activas")
+                            Icon(Icons.Default.Build, contentDescription = "Herramientas")
                         }
                     }
-                    // Botón documentos de contexto (solo si hay proyecto)
                     if (projectId.isNotBlank()) {
-                        BadgedBox(
-                            badge = {
-                                val checkedCount = uiState.documents.count { it.isChecked }
-                                if (checkedCount > 0) Badge { Text("$checkedCount") }
-                            }
-                        ) {
+                        BadgedBox(badge = {
+                            val n = uiState.documents.count { it.isChecked }
+                            if (n > 0) Badge { Text("$n") }
+                        }) {
                             IconButton(onClick = { showDocPanel = !showDocPanel }) {
-                                Icon(Icons.Default.AttachFile, contentDescription = "Documentos de contexto")
+                                Icon(Icons.Default.AttachFile, contentDescription = "Documentos")
                             }
                         }
                     }
@@ -172,55 +149,41 @@ fun ChatScreen(
                     selected  = uiState.selectedProvider,
                     onSelect  = { viewModel.processIntent(ChatIntent.SelectProvider(it)) }
                 )
-                // P6: indicador de adjuntos pendientes
                 if (uiState.pendingAttachmentUris.isNotEmpty()) {
                     PendingAttachmentsBar(
-                        uris     = uiState.pendingAttachmentUris,
-                        onClear  = { viewModel.processIntent(ChatIntent.ClearPendingAttachments) }
+                        uris    = uiState.pendingAttachmentUris,
+                        onClear = { viewModel.processIntent(ChatIntent.ClearPendingAttachments) }
                     )
                 }
                 ChatInputBar(
-                    isStreaming  = uiState.isStreaming,
-                    onSend       = { content ->
-                        viewModel.processIntent(ChatIntent.SendMessage(content))
-                    },
-                    onStop       = { viewModel.processIntent(ChatIntent.StopStreaming) },
-                    onAttach     = {  // P6: abre file picker con tipos comunes
-                        filePickerLauncher.launch(
-                            arrayOf("application/pdf", "image/*", "text/plain")
-                        )
-                    }
+                    isStreaming = uiState.isStreaming,
+                    isSending  = uiState.isSending,
+                    onSend     = { viewModel.processIntent(ChatIntent.SendMessage(it)) },
+                    onStop     = { viewModel.processIntent(ChatIntent.StopStreaming) },
+                    onAttach   = { filePickerLauncher.launch(arrayOf("application/pdf","image/*","text/plain")) }
                 )
             }
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
+
             if (showDocPanel && projectId.isNotBlank()) {
                 DocumentContextPanel(
                     documents = uiState.documents,
-                    onToggle  = { docId ->
-                        viewModel.processIntent(ChatIntent.ToggleDocumentCheckpoint(docId))
-                    }
+                    onToggle  = { viewModel.processIntent(ChatIntent.ToggleDocumentCheckpoint(it)) }
                 )
                 Divider()
             }
 
             LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(8.dp),
+                state             = listState,
+                modifier          = Modifier.weight(1f),
+                contentPadding    = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (uiState.messages.isEmpty() && !uiState.isStreaming) {
                     item {
-                        Box(
-                            modifier = Modifier.fillParentMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
+                        Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 "Enviá un mensaje para comenzar",
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
@@ -232,16 +195,19 @@ fun ChatScreen(
 
                 items(uiState.messages, key = { it.id }) { message ->
                     val isLastAssistant = message.role == MessageRole.ASSISTANT &&
-                        message.id == uiState.messages
-                            .lastOrNull { it.role == MessageRole.ASSISTANT }?.id
+                        message.id == uiState.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id
+
+                    // FIX: para mensajes de usuario muestra "Reintentar" cuando no hay streaming
+                    val showRetry = message.role == MessageRole.USER && !uiState.isStreaming
 
                     MessageBubble(
                         message      = message,
                         showActions  = isLastAssistant && !uiState.isStreaming,
+                        showRetry    = showRetry,
                         onRegenerate = { viewModel.processIntent(ChatIntent.RegenerateLastMessage) },
+                        onRetry      = { viewModel.processIntent(ChatIntent.RetryFromMessage(message.id)) },
                         modifier     = Modifier.testTag(
-                            if (message.role == MessageRole.ASSISTANT) "assistant_message"
-                            else "user_message"
+                            if (message.role == MessageRole.ASSISTANT) "assistant_message" else "user_message"
                         )
                     )
                 }
@@ -260,31 +226,17 @@ fun ChatScreen(
     }
 }
 
-// ── P6: Barra de adjuntos pendientes ─────────────────────────────────────────
+// ── Barra de adjuntos pendientes ──────────────────────────────────────────────
 @Composable
-private fun PendingAttachmentsBar(
-    uris: List<String>,
-    onClear: () -> Unit
-) {
+private fun PendingAttachmentsBar(uris: List<String>, onClear: () -> Unit) {
     Surface(tonalElevation = 2.dp) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                Icons.Default.AttachFile,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
+            Icon(Icons.Default.AttachFile, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(6.dp))
-            Text(
-                text = "${uris.size} archivo(s) adjunto(s)",
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.weight(1f)
-            )
+            Text("${uris.size} archivo(s) adjunto(s)", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
             TextButton(onClick = onClear, contentPadding = PaddingValues(horizontal = 8.dp)) {
                 Text("Limpiar", style = MaterialTheme.typography.labelSmall)
             }
@@ -293,92 +245,51 @@ private fun PendingAttachmentsBar(
 }
 
 // ── Selector de proveedor ─────────────────────────────────────────────────────
-
 @Composable
-private fun ProviderSelector(
-    providers: List<ApiProvider>,
-    selected: ApiProvider?,
-    onSelect: (ApiProvider?) -> Unit
-) {
+private fun ProviderSelector(providers: List<ApiProvider>, selected: ApiProvider?, onSelect: (ApiProvider?) -> Unit) {
     if (providers.isEmpty()) return
-    LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
+    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
-            FilterChip(
-                selected = selected == null,
-                onClick  = { onSelect(null) },
-                label    = { Text("Auto", style = MaterialTheme.typography.labelSmall) }
-            )
+            FilterChip(selected == null, { onSelect(null) }, label = { Text("Auto", style = MaterialTheme.typography.labelSmall) })
         }
-        items(providers) { provider ->
+        items(providers) { p ->
             FilterChip(
-                selected    = selected == provider,
-                onClick     = { onSelect(provider) },
-                label       = { Text(provider.displayName, style = MaterialTheme.typography.labelSmall) },
-                leadingIcon = if (provider == ApiProvider.LOCAL_ON_DEVICE) {
-                    { Icon(Icons.Default.PhoneAndroid, null, modifier = Modifier.size(14.dp)) }
-                } else null
+                selected    = selected == p,
+                onClick     = { onSelect(p) },
+                label       = { Text(p.displayName, style = MaterialTheme.typography.labelSmall) },
+                leadingIcon = if (p == ApiProvider.LOCAL_ON_DEVICE) {{ Icon(Icons.Default.PhoneAndroid, null, Modifier.size(14.dp)) }} else null
             )
         }
     }
 }
 
-// ── Resto de composables ──────────────────────────────────────────────────────
-
+// ── Panel de documentos ───────────────────────────────────────────────────────
 @Composable
-private fun DocumentContextPanel(
-    documents: List<DocumentNode>,
-    onToggle: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Text(
-            "Contexto activo",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.height(4.dp))
+private fun DocumentContextPanel(documents: List<DocumentNode>, onToggle: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Text("Contexto activo", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(4.dp))
         if (documents.isEmpty()) {
-            Text(
-                "No hay documentos en este proyecto",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
+            Text("No hay documentos en este proyecto", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
         } else {
             documents.forEach { doc ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Checkbox(
-                        checked = doc.isChecked,
-                        onCheckedChange = { onToggle(doc.id) },
-                        modifier = Modifier.size(36.dp)
-                    )
-                    Text(
-                        text = doc.name,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Checkbox(doc.isChecked, { onToggle(doc.id) }, Modifier.size(36.dp))
+                    Text(doc.name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                 }
             }
         }
     }
 }
 
+// ── Burbuja de mensaje ────────────────────────────────────────────────────────
 @Composable
 private fun MessageBubble(
     message: Message,
-    showActions: Boolean = false,
+    showActions: Boolean = false,  // acciones del asistente (copiar, regenerar)
+    showRetry: Boolean = false,    // FIX: botón reintentar en mensajes del usuario
     onRegenerate: () -> Unit = {},
+    onRetry: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isUser = message.role == MessageRole.USER
@@ -386,101 +297,85 @@ private fun MessageBubble(
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth(),
             horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
         ) {
             Card(
                 modifier = Modifier.widthIn(max = 300.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isUser)
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = if (isUser) MaterialTheme.colorScheme.primary
+                                     else MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(Modifier.padding(12.dp)) {
                     Text(
                         text = message.content,
                         color = if (isUser) MaterialTheme.colorScheme.onPrimary
                                 else MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    // P6: muestra indicador si el mensaje tiene adjuntos
                     if (message.attachmentUris.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            text = "📎 ${message.attachmentUris.size} adjunto(s)",
+                            "📎 ${message.attachmentUris.size} adjunto(s)",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (isUser)
-                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            color = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
                     }
                 }
             }
         }
 
-        if (showActions) {
+        // FIX: botón "Reintentar" debajo del mensaje del USUARIO
+        if (showRetry && isUser) {
             Row(
-                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                Modifier.fillMaxWidth().padding(end = 4.dp, top = 2.dp),
+                horizontalArrangement = Arrangement.End
             ) {
-                IconButton(
-                    onClick  = { clipboardManager.setText(AnnotatedString(message.content)) },
-                    modifier = Modifier.size(28.dp)
+                TextButton(
+                    onClick            = onRetry,
+                    contentPadding     = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    modifier           = Modifier.height(24.dp)
                 ) {
-                    Icon(
-                        Icons.Default.ContentCopy,
-                        contentDescription = "Copiar mensaje",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    Icon(Icons.Default.Refresh, contentDescription = null, Modifier.size(12.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Reintentar",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
                     )
                 }
-                IconButton(
-                    onClick  = onRegenerate,
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = "Regenerar respuesta",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                    )
+            }
+        }
+
+        // Acciones del ASISTENTE (copiar, regenerar)
+        if (showActions && !isUser) {
+            Row(Modifier.padding(start = 4.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                IconButton({ clipboardManager.setText(AnnotatedString(message.content)) }, Modifier.size(28.dp)) {
+                    Icon(Icons.Default.ContentCopy, "Copiar", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                }
+                IconButton(onRegenerate, Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Refresh, "Regenerar", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
                 }
             }
         }
     }
 }
 
+// ── Indicador de streaming ────────────────────────────────────────────────────
 @Composable
-private fun StreamingIndicator(
-    buffer: String,
-    provider: ApiProvider?,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Start
-    ) {
+private fun StreamingIndicator(buffer: String, provider: ApiProvider?, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
         Card(
-            modifier = Modifier.widthIn(max = 300.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
+            Modifier.widthIn(max = 300.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(Modifier.padding(12.dp)) {
                 provider?.let {
-                    Text(
-                        text = "⚡ ${it.displayName}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Text("⚡ ${it.displayName}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
-                if (buffer.isNotEmpty()) {
-                    Text(text = buffer, style = MaterialTheme.typography.bodyMedium)
-                } else {
-                    DotsLoadingIndicator()
-                }
+                if (buffer.isNotEmpty()) Text(buffer, style = MaterialTheme.typography.bodyMedium)
+                else DotsLoadingIndicator()
             }
         }
     }
@@ -490,73 +385,52 @@ private fun StreamingIndicator(
 private fun DotsLoadingIndicator() {
     val infiniteTransition = rememberInfiniteTransition(label = "dots")
     val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(600), repeatMode = RepeatMode.Reverse
-        ), label = "dots_alpha"
+        0.3f, 1f,
+        infiniteRepeatable(tween(600), RepeatMode.Reverse),
+        label = "dots_alpha"
     )
-    Text(
-        text = "● ● ●",
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-        style = MaterialTheme.typography.bodyMedium
-    )
+    Text("● ● ●", color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha), style = MaterialTheme.typography.bodyMedium)
 }
 
-// P6: ChatInputBar actualizado con botón de adjuntos
+// ── Input bar ─────────────────────────────────────────────────────────────────
 @Composable
 private fun ChatInputBar(
     isStreaming: Boolean,
+    isSending: Boolean,   // FIX: guard anti-doble-envío
     onSend: (String) -> Unit,
     onStop: () -> Unit,
-    onAttach: () -> Unit  // P6
+    onAttach: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
+    val busy = isStreaming || isSending
+
     Surface(tonalElevation = 3.dp) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // P6: botón de adjuntar archivo
-            IconButton(
-                onClick  = onAttach,
-                enabled  = !isStreaming,
-                modifier = Modifier.size(40.dp)
-            ) {
-                Icon(
-                    Icons.Default.AttachFile,
-                    contentDescription = "Adjuntar archivo",
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.3f else 0.7f)
-                )
+            IconButton(onClick = onAttach, enabled = !busy, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Default.AttachFile, "Adjuntar", Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (busy) 0.3f else 0.7f))
             }
             OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
+                value = input, onValueChange = { input = it },
                 placeholder = { Text("Escribe tu mensaje...") },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("chat_input"),
-                maxLines = 4
+                modifier = Modifier.weight(1f).testTag("chat_input"),
+                maxLines = 4,
+                enabled  = !busy
             )
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(Modifier.width(4.dp))
             if (isStreaming) {
-                IconButton(onClick = onStop) {
-                    Icon(Icons.Default.Stop, contentDescription = "Detener")
-                }
+                IconButton(onClick = onStop) { Icon(Icons.Default.Stop, "Detener") }
             } else {
                 IconButton(
-                    onClick = {
-                        if (input.isNotBlank()) {
-                            onSend(input.trim())
-                            input = ""
-                        }
-                    },
+                    onClick  = { if (input.isNotBlank()) { onSend(input.trim()); input = "" } },
                     modifier = Modifier.testTag("send_button"),
-                    enabled = input.isNotBlank()
+                    // FIX: deshabilitado si isSending o input vacío
+                    enabled  = input.isNotBlank() && !isSending
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = "Enviar")
+                    Icon(Icons.Default.Send, "Enviar")
                 }
             }
         }

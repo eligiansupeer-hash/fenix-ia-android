@@ -15,8 +15,8 @@ android {
         applicationId = "com.fenix.ia"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "1.0.24"
+        versionCode = 25
+        versionName = "1.0.25"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ksp {

@@ -14,6 +14,7 @@ import com.fenix.ia.domain.model.MessageRole
 import com.fenix.ia.domain.repository.ApiKeyRepository
 import com.fenix.ia.domain.repository.DocumentRepository
 import com.fenix.ia.domain.repository.MessageRepository
+import com.fenix.ia.domain.repository.ToolRepository
 import com.fenix.ia.local.LocalLlmEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -30,7 +31,8 @@ class ChatViewModel @Inject constructor(
     private val documentRepository: DocumentRepository,
     private val ragEngine: RagEngine,
     private val apiKeyRepository: ApiKeyRepository,
-    private val localLlmEngine: LocalLlmEngine
+    private val localLlmEngine: LocalLlmEngine,
+    private val toolRepository: ToolRepository  // P5: inyectado para control granular de tools
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -40,7 +42,7 @@ class ChatViewModel @Inject constructor(
     val effects: Flow<ChatEffect> = _effects.receiveAsFlow()
 
     private var currentChatId: String = ""
-    private var currentProjectId: String = ""
+    private var currentProjectId: String = ""  // P4: puede ser vacío en chats generales
     private var streamingJob: Job? = null
 
     companion object {
@@ -59,9 +61,13 @@ class ChatViewModel @Inject constructor(
                 .catch { e -> _uiState.update { it.copy(error = e.message) } }
                 .collect { messages -> _uiState.update { it.copy(messages = messages) } }
         }
-        viewModelScope.launch {
-            documentRepository.getDocumentsByProject(projectId)
-                .collect { docs -> _uiState.update { it.copy(documents = docs) } }
+
+        // P4: Solo carga documentos si hay proyecto asociado
+        if (projectId.isNotBlank()) {
+            viewModelScope.launch {
+                documentRepository.getDocumentsByProject(projectId)
+                    .collect { docs -> _uiState.update { it.copy(documents = docs) } }
+            }
         }
 
         viewModelScope.launch {
@@ -86,47 +92,92 @@ class ChatViewModel @Inject constructor(
                     } else {
                         providers.remove(ApiProvider.LOCAL_ON_DEVICE)
                     }
-                    val newSelected = if (!ready && state.selectedProvider == ApiProvider.LOCAL_ON_DEVICE)
-                        null else state.selectedProvider
+                    val newSelected =
+                        if (!ready && state.selectedProvider == ApiProvider.LOCAL_ON_DEVICE) null
+                        else state.selectedProvider
                     state.copy(availableProviders = providers, selectedProvider = newSelected)
                 }
+            }
+        }
+
+        // P5: carga todas las herramientas y las habilitadas para este chat
+        viewModelScope.launch {
+            toolRepository.getAllTools().collect { tools ->
+                _uiState.update { it.copy(allTools = tools) }
+            }
+        }
+        viewModelScope.launch {
+            toolRepository.getEnabledToolIdsForChat(chatId).collect { enabledIds ->
+                _uiState.update { it.copy(enabledToolIds = enabledIds.toSet()) }
             }
         }
     }
 
     fun processIntent(intent: ChatIntent) {
         when (intent) {
-            is ChatIntent.SendMessage            -> sendMessage(intent.content, intent.attachmentIds)
+            is ChatIntent.SendMessage              -> sendMessage(intent.content, intent.attachmentUris)
             is ChatIntent.ToggleDocumentCheckpoint -> toggleCheckpoint(intent.documentId)
-            is ChatIntent.StopStreaming          -> stopStreaming()
-            is ChatIntent.LoadChat               -> loadChat(intent.chatId, "")
-            is ChatIntent.RegenerateLastMessage  -> regenerateLastMessage()
-            is ChatIntent.DismissError           -> _uiState.update { it.copy(error = null) }
-            is ChatIntent.SelectProvider         -> _uiState.update { it.copy(selectedProvider = intent.provider) }
+            is ChatIntent.StopStreaming            -> stopStreaming()
+            is ChatIntent.LoadChat                 -> loadChat(intent.chatId, "")
+            is ChatIntent.RegenerateLastMessage    -> regenerateLastMessage()
+            is ChatIntent.DismissError             -> _uiState.update { it.copy(error = null) }
+            is ChatIntent.SelectProvider           -> _uiState.update { it.copy(selectedProvider = intent.provider) }
+            is ChatIntent.ToggleTool               -> toggleTool(intent.toolId)         // P5
+            is ChatIntent.AddAttachmentUri         -> addAttachment(intent.uri)          // P6
+            is ChatIntent.ClearPendingAttachments  -> _uiState.update { it.copy(pendingAttachmentUris = emptyList()) }
         }
     }
 
-    private fun sendMessage(content: String, attachmentIds: List<String>) {
+    // P5: alterna el estado de una herramienta en este chat
+    private fun toggleTool(toolId: String) {
+        viewModelScope.launch {
+            val isCurrentlyEnabled = toolId in _uiState.value.enabledToolIds
+            toolRepository.setToolEnabledForChat(currentChatId, toolId, !isCurrentlyEnabled)
+        }
+    }
+
+    // P6: agrega un URI de adjunto a la lista pendiente
+    private fun addAttachment(uri: String) {
+        _uiState.update { it.copy(pendingAttachmentUris = it.pendingAttachmentUris + uri) }
+    }
+
+    private fun sendMessage(content: String, attachmentUris: List<String>) {
         viewModelScope.launch {
             if (_uiState.value.isStreaming) return@launch
+
+            // P6: combina adjuntos explícitos con los pendientes acumulados en estado
+            val allAttachmentUris = (attachmentUris + _uiState.value.pendingAttachmentUris).distinct()
 
             val userMessage = Message(
                 id = UUID.randomUUID().toString(),
                 chatId = currentChatId,
                 role = MessageRole.USER,
                 content = content,
-                timestamp = System.currentTimeMillis()
+                timestamp = System.currentTimeMillis(),
+                attachmentUris = allAttachmentUris  // P6
             )
             messageRepository.insertMessage(userMessage)
 
-            val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
-            val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(content, checkedDocs)
+            // P6: limpia adjuntos pendientes tras envío
+            _uiState.update { it.copy(pendingAttachmentUris = emptyList()) }
+
+            // P4: solo consulta documentos si hay proyecto
+            val checkedDocs = if (currentProjectId.isNotBlank())
+                documentRepository.getCheckedDocuments(currentProjectId)
+            else emptyList()
+
+            val (systemPrompt, estimatedTokens, contextMode) =
+                buildContextForQuery(content, checkedDocs)
 
             val provider = _uiState.value.selectedProvider
                 ?: llmRouter.selectProvider(
                     estimatedTokens = estimatedTokens,
                     taskType = detectTaskType(content)
                 )
+
+            // P5: obtiene tools habilitadas para pasar al router
+            val activeTools = _uiState.value.allTools
+                .filter { it.id in _uiState.value.enabledToolIds }
 
             _uiState.update {
                 it.copy(
@@ -144,7 +195,7 @@ class ChatViewModel @Inject constructor(
                 val history = _uiState.value.messages
                     .takeLast(MAX_HISTORY_MESSAGES)
                     .map { LlmMessage(role = it.role.name.lowercase(), content = it.content) }
-                collectInferenceStream(history, systemPrompt, provider)
+                collectInferenceStream(history, systemPrompt, provider, activeTools)
             }
         }
     }
@@ -153,19 +204,28 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             if (_uiState.value.isStreaming) return@launch
             val messages = _uiState.value.messages
-            val lastAssistant = messages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return@launch
-            val lastUserContent = messages.lastOrNull { it.role == MessageRole.USER }?.content ?: return@launch
+            val lastAssistant =
+                messages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return@launch
+            val lastUserContent =
+                messages.lastOrNull { it.role == MessageRole.USER }?.content ?: return@launch
 
             messageRepository.deleteMessage(lastAssistant.id)
 
-            val checkedDocs = documentRepository.getCheckedDocuments(currentProjectId)
-            val (systemPrompt, estimatedTokens, contextMode) = buildContextForQuery(lastUserContent, checkedDocs)
+            val checkedDocs = if (currentProjectId.isNotBlank())
+                documentRepository.getCheckedDocuments(currentProjectId)
+            else emptyList()
+
+            val (systemPrompt, estimatedTokens, contextMode) =
+                buildContextForQuery(lastUserContent, checkedDocs)
 
             val provider = _uiState.value.selectedProvider
                 ?: llmRouter.selectProvider(
                     estimatedTokens = estimatedTokens,
                     taskType = detectTaskType(lastUserContent)
                 )
+
+            val activeTools = _uiState.value.allTools
+                .filter { it.id in _uiState.value.enabledToolIds }
 
             val history = messages
                 .filter { it.id != lastAssistant.id }
@@ -185,7 +245,7 @@ class ChatViewModel @Inject constructor(
             }
 
             streamingJob = viewModelScope.launch {
-                collectInferenceStream(history, systemPrompt, provider)
+                collectInferenceStream(history, systemPrompt, provider, activeTools)
             }
         }
     }
@@ -224,7 +284,8 @@ class ChatViewModel @Inject constructor(
             }
         } else {
             contextMode = ContextMode.RAG
-            val relevantChunks = ragEngine.searchInDocuments(query, docIds, limit = RAG_CHUNK_LIMIT)
+            val relevantChunks =
+                ragEngine.searchInDocuments(query, docIds, limit = RAG_CHUNK_LIMIT)
             contextBlock = if (relevantChunks.isEmpty()) {
                 "(No se encontraron fragmentos relevantes. Los documentos pueden estar procesándose todavía.)"
             } else {
@@ -232,8 +293,9 @@ class ChatViewModel @Inject constructor(
                     appendLine("Fragmentos más relevantes para la consulta (ordenados por relevancia):")
                     appendLine()
                     relevantChunks.forEachIndexed { i, chunk ->
-                        val name = checkedDocs.firstOrNull { it.id == chunk.documentNodeId }?.name
-                            ?: chunk.documentNodeId
+                        val name =
+                            checkedDocs.firstOrNull { it.id == chunk.documentNodeId }?.name
+                                ?: chunk.documentNodeId
                         appendLine("── Fragmento ${i + 1} de «$name» ──")
                         appendLine(chunk.textPayload)
                         appendLine()
@@ -272,22 +334,22 @@ class ChatViewModel @Inject constructor(
 
     /**
      * Colecta el stream de inferencia y actualiza el estado MVI.
-     *
-     * FASE 11: StreamEvent.Error limpia streamingBuffer explícitamente para
-     *   evitar "texto fantasma" en la siguiente interacción.
-     * FASE 12: ScrollToBottom eliminado — el scroll se maneja solo via
-     *   LaunchedEffect(messages.size) en ChatScreen (estado reactivo puro).
+     * P5: recibe la lista de tools habilitadas para pasarla al router.
+     * FASE 11: StreamEvent.Error limpia streamingBuffer explícitamente.
+     * FASE 12: ScrollToBottom eliminado — scroll vía LaunchedEffect en ChatScreen.
      */
     private suspend fun collectInferenceStream(
         history: List<LlmMessage>,
         systemPrompt: String,
-        provider: ApiProvider
+        provider: ApiProvider,
+        tools: List<com.fenix.ia.domain.model.Tool> = emptyList()  // P5
     ) {
         val assistantMessageId = UUID.randomUUID().toString()
         llmRouter.streamCompletion(
             messages = history,
             systemPrompt = systemPrompt,
-            provider = provider
+            provider = provider,
+            tools = tools  // P5: inyecta tools habilitadas al router
         ).collect { event ->
             when (event) {
                 is StreamEvent.Token ->
@@ -307,15 +369,14 @@ class ChatViewModel @Inject constructor(
                             )
                         )
                     }
-                    // FASE 12: Sin _effects.send(ScrollToBottom) — scroll via LaunchedEffect en UI
                     _uiState.update { it.copy(isStreaming = false, streamingBuffer = "") }
                 }
                 is StreamEvent.Error ->
-                    // FASE 11: streamingBuffer limpiado explícitamente en error para evitar ghosting
+                    // FASE 11: streamingBuffer limpiado explícitamente en error
                     _uiState.update {
                         it.copy(
                             isStreaming = false,
-                            streamingBuffer = "",  // FASE 11: previene "texto fantasma"
+                            streamingBuffer = "",
                             error = event.message
                         )
                     }

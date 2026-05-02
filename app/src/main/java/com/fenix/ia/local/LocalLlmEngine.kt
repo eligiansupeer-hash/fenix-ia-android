@@ -8,7 +8,6 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.*
-import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.HttpHeaders
@@ -27,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 /**
@@ -35,13 +35,20 @@ import javax.inject.Singleton
  * Solo se activa en dispositivos con >= 3500 MB RAM total (aprox 4 GB).
  *
  * FASE 6 — Ciclo de vida nativo (DefaultLifecycleObserver sobre ProcessLifecycleOwner)
- * P1 FIX — downloadModel usa timeout INFINITO para evitar SocketTimeoutException en
- *           binarios grandes, sobreescribiendo el timeout global de 120s de AppModule.
+ *
+ * FIX F1 — downloadModel inyecta @Named("download") HttpClient que tiene:
+ *   - OkHttpClient.readTimeout = 0 (infinito a nivel OkHttp)
+ *   - OkHttpClient.writeTimeout = 0 (infinito a nivel OkHttp)
+ *   - HttpTimeout plugin: requestTimeout e socketTimeout = INFINITE_TIMEOUT_MS
+ *   Esto elimina la SocketTimeoutException en descargas de 1.5 GB a baja velocidad.
+ *
+ * Se eliminó el bloque `timeout {}` local que era insuficiente porque el socketTimeoutMillis
+ * global del cliente compartido (90s en @Named("api")) seguía activo en las lecturas de chunk.
  */
 @Singleton
 class LocalLlmEngine @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val httpClient: HttpClient
+    @Named("download") private val downloadClient: HttpClient   // FIX F1: cliente dedicado
 ) : DefaultLifecycleObserver {
 
     companion object {
@@ -52,6 +59,7 @@ class LocalLlmEngine @Inject constructor(
         private const val TOP_K       = 40
         private const val TEMPERATURE = 0.8f
         private const val MIN_VALID_FILE_BYTES = 1_000_000L
+        private const val BUFFER_SIZE = 32 * 1024  // 32 KB chunks
     }
 
     private var inference: LlmInference? = null
@@ -139,13 +147,15 @@ class LocalLlmEngine @Inject constructor(
         awaitClose { activeListener = null }
     }.flowOn(Dispatchers.Default)
 
-    // ── Descarga — CORRECCIÓN P1 ─────────────────────────────────────────────
+    // ── Descarga — FIX F1 ────────────────────────────────────────────────────
 
     /**
-     * Descarga el modelo binario (~1.5 GB).
-     * CORRECCIÓN P1: se sobreescribe requestTimeoutMillis con INFINITE_TIMEOUT_MS
-     * a nivel de bloque `timeout {}` local, eludiendo el límite global de 120s
-     * definido en AppModule que causaba SocketTimeoutException.
+     * Descarga el modelo binario (~1.5 GB) usando el [downloadClient] dedicado.
+     *
+     * FIX F1: Se eliminó el bloque `timeout {}` local (era insuficiente).
+     * El cliente @Named("download") ya tiene OkHttp readTimeout=0 + socketTimeout=INFINITE,
+     * por lo que ninguna capa de timeout puede interrumpir la descarga sin importar
+     * la velocidad de red o la duración total de la operación.
      */
     suspend fun downloadModel(
         url: String,
@@ -155,16 +165,13 @@ class LocalLlmEngine @Inject constructor(
         val destFile = File(destDir, MODEL_FILE)
         val tmpFile  = File(destDir, "$MODEL_FILE.tmp")
         try {
-            httpClient.prepareGet(url) {
-                // Override local: timeout infinito SOLO para esta descarga pesada
-                timeout { requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS }
-            }.execute { response ->
+            downloadClient.prepareGet(url).execute { response ->
                 if (!response.status.isSuccess()) return@execute
                 val totalBytes = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
                 var downloaded = 0L
                 val channel = response.bodyAsChannel()
                 tmpFile.outputStream().use { out ->
-                    val buffer = ByteArray(32 * 1024)
+                    val buffer = ByteArray(BUFFER_SIZE)
                     while (!channel.isClosedForRead) {
                         val read = channel.readAvailable(buffer)
                         if (read > 0) {

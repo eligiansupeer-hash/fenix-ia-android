@@ -9,6 +9,10 @@ interface ChatDao {
     @Query("SELECT * FROM chats WHERE projectId = :projectId ORDER BY createdAt DESC")
     fun getChatsByProject(projectId: String): Flow<List<ChatEntity>>
 
+    // P4: Chats globales — projectId es NULL (sin proyecto asociado)
+    @Query("SELECT * FROM chats WHERE projectId IS NULL ORDER BY createdAt DESC")
+    fun getGeneralChats(): Flow<List<ChatEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChat(chat: ChatEntity)
 

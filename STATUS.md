@@ -82,6 +82,19 @@ Verificados en repo:
 ### S7 — Tests de Verificación — COMPLETADA
 - `ToolCallingPipelineTest.kt` — CREADO: 12 tests unitarios puros (sin Android/Hilt) que verifican detección de tool calls en formato inyectado `<tool_call>` y formato nativo OpenAI `delta.tool_calls[0].function`
 
-### Pendiente para próxima sesión
-- Verificar que `ProjectListScreen` compile con el nuevo parámetro `onNavigateToGeneralChats`
-- Revisar si `GeminiApiClientTest.kt` y `LocalModelDownloadTest.kt` (S7) fueron aplicados en sesiones anteriores o deben crearse
+## Sesión 5 — 2 Mayo 2026
+
+### Fix compilación CI — COMPLETADO (commit 10209e3)
+**Error:** `FenixNavHost.kt:53:17 No parameter with name 'onNavigateToGeneralChats' found.`
+
+**Causa raíz:** En sesión 4 se actualizó `FenixNavHost.kt` para pasar `onNavigateToGeneralChats` a `ProjectListScreen`, pero la firma de `ProjectListScreen` no fue actualizada en ese mismo commit.
+
+**Fix aplicado en `ProjectListScreen.kt`:**
+- Agregado parámetro `onNavigateToGeneralChats: () -> Unit` en la firma del `@Composable`
+- Agregado `IconButton` en la `TopAppBar` con `Icons.Default.Chat` que invoca `onNavigateToGeneralChats`
+- Import `Icons.filled.Chat` añadido
+
+**Verificación:** Ningún otro sitio llama a `ProjectListScreen` (solo `FenixNavHost.kt`). Tests unitarios no referencian esta screen.
+
+### Estado CI
+- ⏳ Esperando confirmación del Action tras commit 10209e3

@@ -23,8 +23,15 @@ import io.ktor.serialization.kotlinx.json.*
 import io.objectbox.BoxStore
 import okhttp3.CipherSuite
 import okhttp3.ConnectionSpec
+import okhttp3.OkHttpClient
 import okhttp3.TlsVersion
+import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Singleton
+
+// ── Calificadores para los dos clientes HTTP ─────────────────────────────────
+// @Named("api")      → LLM, búsqueda web, GitHub — timeout 120s request / 90s socket
+// @Named("download") → descarga modelo ~1.5 GB / APK OTA — timeouts infinitos
 
 // ── Migración v1 → v2: crea tabla tools ──────────────────────────────────────
 val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -112,7 +119,7 @@ object AppModule {
     @Provides fun provideMessageDao(db: FenixDatabase)  = db.messageDao()
     @Provides fun provideDocumentDao(db: FenixDatabase) = db.documentDao()
     @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()
-    @Provides fun provideChatToolDao(db: FenixDatabase) = db.chatToolDao() // P5
+    @Provides fun provideChatToolDao(db: FenixDatabase) = db.chatToolDao()
 
     // ── ObjectBox ─────────────────────────────────────────────────────────────
     @Provides
@@ -122,11 +129,9 @@ object AppModule {
         return ObjectBoxStore.store
     }
 
-    // ── Ktor HttpClient — OkHttp + TLS fingerprint Chrome 120+ (Fase 10) ─────
-    @Provides
-    @Singleton
-    fun provideKtorClient(): HttpClient {
-        val tlsSpec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+    // ── TLS spec compartido — Chrome 120+ cipher suites ──────────────────────
+    private fun buildTlsSpec(): ConnectionSpec =
+        ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
             .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2)
             .cipherSuites(
                 CipherSuite.TLS_AES_128_GCM_SHA256,
@@ -138,12 +143,20 @@ object AppModule {
             )
             .build()
 
+    // ── Cliente API — LLM / búsqueda / GitHub ─────────────────────────────────
+    // socketTimeoutMillis = 90s  (DDG puede ser lento pero no más de eso)
+    // requestTimeoutMillis = 120s (respuestas LLM streaming largas)
+    @Provides
+    @Singleton
+    @Named("api")
+    fun provideApiKtorClient(): HttpClient {
+        val tlsSpec = buildTlsSpec()
         return HttpClient(OkHttp) {
             install(ContentNegotiation) { json() }
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000L
                 connectTimeoutMillis = 15_000L
-                socketTimeoutMillis  = 120_000L
+                socketTimeoutMillis  = 90_000L   // FIX: era 120s; 90s es suficiente para DDG
             }
             engine {
                 config {
@@ -152,6 +165,42 @@ object AppModule {
             }
         }
     }
+
+    // ── Cliente de descarga — modelo LLM (~1.5 GB) y APK OTA ─────────────────
+    // Todos los timeouts a INFINITO: las descargas pesadas deben poder tomar horas
+    // sin que el socket ni el request sean interrumpidos por el cliente HTTP.
+    @Provides
+    @Singleton
+    @Named("download")
+    fun provideDownloadKtorClient(): HttpClient {
+        val tlsSpec = buildTlsSpec()
+        // OkHttpClient raw con timeouts 0 (= infinito) para el engine
+        val okHttp = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)       // conexión inicial: 30s es razonable
+            .readTimeout(0, TimeUnit.MILLISECONDS)      // FIX: sin timeout de lectura (streaming)
+            .writeTimeout(0, TimeUnit.MILLISECONDS)     // FIX: sin timeout de escritura
+            .connectionSpecs(listOf(tlsSpec, ConnectionSpec.CLEARTEXT))
+            .build()
+
+        return HttpClient(OkHttp) {
+            install(ContentNegotiation) { json() }
+            // FIX: HttpTimeout plugin con INFINITE en todos los valores
+            install(HttpTimeout) {
+                requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                connectTimeoutMillis = 30_000L
+                socketTimeoutMillis  = HttpTimeout.INFINITE_TIMEOUT_MS
+            }
+            engine {
+                preconfigured = okHttp
+            }
+        }
+    }
+
+    // ── Proveedor del cliente principal (sin qualifier) para inyección legacy ─
+    // Redirige al cliente API para no romper clases que inyectan HttpClient directamente.
+    @Provides
+    @Singleton
+    fun provideKtorClient(@Named("api") apiClient: HttpClient): HttpClient = apiClient
 }
 
 @Module

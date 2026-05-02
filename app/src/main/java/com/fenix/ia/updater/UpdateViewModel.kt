@@ -19,9 +19,9 @@ data class UpdateUiState(
 )
 
 sealed class UpdateIntent {
-    object CheckForUpdate : UpdateIntent()
-    object DownloadAndInstall : UpdateIntent()
-    object DismissError : UpdateIntent()
+    object CheckForUpdate      : UpdateIntent()
+    object DownloadAndInstall  : UpdateIntent()
+    object DismissError        : UpdateIntent()
     object DismissUpdateDialog : UpdateIntent()
 }
 
@@ -35,9 +35,9 @@ class UpdateViewModel @Inject constructor(
 
     fun processIntent(intent: UpdateIntent) {
         when (intent) {
-            is UpdateIntent.CheckForUpdate     -> checkForUpdate()
-            is UpdateIntent.DownloadAndInstall -> downloadAndInstall()
-            is UpdateIntent.DismissError       -> _uiState.update { it.copy(error = null) }
+            is UpdateIntent.CheckForUpdate      -> checkForUpdate()
+            is UpdateIntent.DownloadAndInstall  -> downloadAndInstall()
+            is UpdateIntent.DismissError        -> _uiState.update { it.copy(error = null) }
             is UpdateIntent.DismissUpdateDialog -> _uiState.update { it.copy(updateAvailable = null) }
         }
     }
@@ -56,32 +56,24 @@ class UpdateViewModel @Inject constructor(
 
     private fun downloadAndInstall() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isDownloading = true, downloadProgress = 0, updateAvailable = null, error = null) }
-
-            // FIX: re-fetch siempre la URL antes de descargar para obtener un token presignado fresco.
-            // Las URLs de GitHub Releases expiran en ~60s — si el usuario tardó en presionar
-            // "Descargar" o si es un reintento, la URL guardada en updateAvailable ya venció.
-            val freshUrl = when (val fresh = updateChecker.checkForUpdate()) {
-                is UpdateResult.UpdateAvailable -> fresh.apkUrl
-                else -> {
-                    // Versión ya instalada o error de red — no hay nada que descargar
-                    _uiState.update {
-                        it.copy(
-                            isDownloading = false,
-                            error = if (fresh is UpdateResult.Error) fresh.message
-                                    else "Ya tenés la versión más reciente instalada."
-                        )
-                    }
-                    return@launch
-                }
+            val apkUrl = _uiState.value.updateAvailable?.apkUrl
+            if (apkUrl.isNullOrBlank()) {
+                // URL R2 estable — no necesita re-fetch. Si llegamos aquí sin URL,
+                // es un error de flujo (usuario presionó descargar sin haber hecho check).
+                _uiState.update { it.copy(error = "Verificá la actualización antes de descargar.") }
+                return@launch
             }
 
+            _uiState.update { it.copy(isDownloading = true, downloadProgress = 0, error = null) }
+
+            // R2: URL permanente sin TTL → no hay que re-fetchear la URL en cada intento.
+            // UpdateChecker.downloadAndInstall() hace resume automático si existe tmpFile.
             when (val result = updateChecker.downloadAndInstall(
-                apkUrl     = freshUrl,
+                apkUrl     = apkUrl,
                 onProgress = { pct -> _uiState.update { it.copy(downloadProgress = pct) } }
             )) {
                 is DownloadResult.Success -> _uiState.update {
-                    it.copy(isDownloading = false, installReady = true, downloadProgress = 100)
+                    it.copy(isDownloading = false, installReady = true, downloadProgress = 100, updateAvailable = null)
                 }
                 is DownloadResult.Error -> _uiState.update {
                     it.copy(isDownloading = false, error = result.message)

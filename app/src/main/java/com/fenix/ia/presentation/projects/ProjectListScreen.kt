@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.collectLatest
 fun ProjectListScreen(
     onNavigateToProject: (projectId: String) -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToGeneralChats: () -> Unit,
     viewModel: ProjectViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -42,6 +44,12 @@ fun ProjectListScreen(
             TopAppBar(
                 title = { Text("FENIX IA — Proyectos") },
                 actions = {
+                    IconButton(
+                        onClick = onNavigateToGeneralChats,
+                        modifier = Modifier.semantics { contentDescription = "Chats Generales" }
+                    ) {
+                        Icon(Icons.Default.Chat, contentDescription = null)
+                    }
                     IconButton(
                         onClick = onNavigateToSettings,
                         modifier = Modifier.semantics { contentDescription = "Configuración" }

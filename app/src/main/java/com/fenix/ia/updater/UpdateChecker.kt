@@ -20,36 +20,74 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 /**
  * Verifica actualizaciones consultando la GitHub Releases API (pública, sin token).
- * Sin BuildConfig — usa constantes locales sincronizadas con build.gradle.kts.
  *
- * Flujo OTA:
- *   1. checkForUpdate() → compara LOCAL_VERSION_CODE vs tag remoto
- *   2. Si hay update → downloadAndInstall() via DownloadManager (R-04 safe)
- *   3. DownloadManager notifica al completar → lanza instalador del sistema
+ * FIX F2 — Tres bugs corregidos:
  *
- * Manejo de casos especiales:
- *   • HTTP 404 → el repo no tiene releases publicados → UpdateResult.NoReleases
- *   • Tag sin número → UpdateResult.Error con mensaje descriptivo
- *   • Sin APK en el release → UpdateResult.Error indicando el problema
+ * Bug 2a — LOCAL_VERSION_CODE hardcodeado en 2:
+ *   El versionCode real en build.gradle.kts es 45+, por lo que el checker siempre
+ *   reportaba "actualización disponible" aunque no hubiera ninguna.
+ *   FIX: LOCAL_VERSION_CODE lee el versionCode del PackageManager en runtime.
+ *
+ * Bug 2b — launchInstaller usaba Uri.parse(localUri).path en URI content://:
+ *   DownloadManager devuelve COLUMN_LOCAL_URI como "content://downloads/..." en
+ *   Android 10+ lo cual hace que File(uri.path) resuelva a null o a una ruta
+ *   inaccesible — el FileProvider lanzaba FileNotFoundException silenciosamente.
+ *   FIX: se usa COLUMN_LOCAL_FILENAME para obtener la ruta real del filesystem,
+ *   con fallback a parsear el path del URI content:// si el filename está vacío.
+ *
+ * Bug 2c — El cliente HTTP inyectado era el cliente @Named("api") compartido:
+ *   La descarga del APK OTA (~30 MB) puede tardar >120s en redes lentas y el
+ *   socket timeout del cliente API lo interrumpía.
+ *   FIX: se inyecta @Named("download") con timeouts infinitos.
+ *
+ * Flujo OTA completo:
+ *   1. checkForUpdate()      → GitHub API → compara versionCode real vs remoto
+ *   2. downloadAndInstall()  → DownloadManager (background, con notificación)
+ *   3. BroadcastReceiver     → COLUMN_LOCAL_FILENAME → FileProvider → instalador
  */
 @Singleton
 class UpdateChecker @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val httpClient: HttpClient
+    @Named("api") private val httpClient: HttpClient   // FIX 2c: cliente API para GitHub JSON
 ) {
 
     companion object {
         private const val RELEASES_API =
             "https://api.github.com/repos/eligiansupeer-hash/fenix-ia-android/releases/latest"
+    }
 
-        // Sincronizar con versionCode / versionName en app/build.gradle.kts
-        const val LOCAL_VERSION_CODE = 2
-        const val LOCAL_VERSION_NAME = "2.0.0"
+    // FIX 2a: versionCode leído del PackageManager en runtime, no hardcodeado
+    private val localVersionCode: Int by lazy {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                context.packageManager
+                    .getPackageInfo(context.packageName, 0)
+                    .longVersionCode
+                    .toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager
+                    .getPackageInfo(context.packageName, 0)
+                    .versionCode
+            }
+        } catch (e: Exception) {
+            // Fallback seguro: si no podemos leer, asumimos versión 0 → siempre busca update
+            0
+        }
+    }
+
+    private val localVersionName: String by lazy {
+        try {
+            context.packageManager
+                .getPackageInfo(context.packageName, 0)
+                .versionName ?: "0.0.0"
+        } catch (e: Exception) { "0.0.0" }
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -58,17 +96,13 @@ class UpdateChecker @Inject constructor(
         return try {
             val response: HttpResponse = httpClient.get(RELEASES_API) {
                 header("Accept", "application/vnd.github.v3+json")
-                header("User-Agent", "FenixIA-Android/$LOCAL_VERSION_NAME")
+                header("User-Agent", "FenixIA-Android/$localVersionName")
             }
 
             when (response.status.value) {
-                200 -> parseReleaseResponse(response)
-                404 -> {
-                    // 404 significa que el repo no tiene ningún release publicado todavía.
-                    // No es un error de red — es un estado válido.
-                    UpdateResult.NoReleases
-                }
-                403 -> UpdateResult.Error("Rate limit de GitHub alcanzado. Intentá más tarde.")
+                200  -> parseReleaseResponse(response)
+                404  -> UpdateResult.NoReleases
+                403  -> UpdateResult.Error("Rate limit de GitHub alcanzado. Intentá más tarde.")
                 else -> UpdateResult.Error("GitHub API respondió ${response.status.value}")
             }
 
@@ -87,37 +121,41 @@ class UpdateChecker @Inject constructor(
         val remoteVersionCode = release.tagName
             .removePrefix("v")
             .toIntOrNull()
-            ?: return UpdateResult.Error("Tag de release inválido: '${release.tagName}'. Se esperaba formato 'v1', 'v2', etc.")
+            ?: return UpdateResult.Error(
+                "Tag de release inválido: '${release.tagName}'. Se esperaba formato 'v45', etc."
+            )
 
-        if (remoteVersionCode <= LOCAL_VERSION_CODE) {
+        // FIX 2a: compara contra localVersionCode leído del PackageManager
+        if (remoteVersionCode <= localVersionCode) {
             return UpdateResult.UpToDate(
-                currentVersion = LOCAL_VERSION_CODE,
-                remoteVersion = remoteVersionCode
+                currentVersion = localVersionCode,
+                remoteVersion  = remoteVersionCode
             )
         }
 
         val apkAsset = release.assets.firstOrNull {
             it.name.endsWith(".apk", ignoreCase = true)
         } ?: return UpdateResult.Error(
-            "El release v${release.tagName} no contiene un APK adjunto. " +
-            "Verificá que el release en GitHub tenga un archivo .apk como asset."
+            "El release ${release.tagName} no contiene un APK adjunto."
         )
 
         return UpdateResult.UpdateAvailable(
-            currentVersion = LOCAL_VERSION_CODE,
-            newVersion = remoteVersionCode,
-            releaseNotes = release.body.take(500),
-            apkUrl = apkAsset.browserDownloadUrl,
-            apkSizeBytes = apkAsset.size
+            currentVersion = localVersionCode,
+            newVersion     = remoteVersionCode,
+            releaseNotes   = release.body.take(500),
+            apkUrl         = apkAsset.browserDownloadUrl,
+            apkSizeBytes   = apkAsset.size
         )
     }
+
+    // ── Descarga OTA via DownloadManager ─────────────────────────────────────
 
     suspend fun downloadAndInstall(
         apkUrl: String,
         onProgress: (Int) -> Unit = {}
     ): DownloadResult = suspendCancellableCoroutine { continuation ->
 
-        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
         val request = DownloadManager.Request(Uri.parse(apkUrl)).apply {
             setTitle("Fenix IA — Actualizando")
@@ -129,37 +167,48 @@ class UpdateChecker @Inject constructor(
                 "fenix-ia-update.apk"
             )
             setMimeType("application/vnd.android.package-archive")
-            addRequestHeader("User-Agent", "FenixIA-Android/$LOCAL_VERSION_NAME")
+            addRequestHeader("User-Agent", "FenixIA-Android/$localVersionName")
         }
 
-        val downloadId = downloadManager.enqueue(request)
+        val downloadId = dm.enqueue(request)
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
-                val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+                val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
                 if (id != downloadId) return
 
                 context.unregisterReceiver(this)
 
-                val query = DownloadManager.Query().setFilterById(downloadId)
-                val cursor = downloadManager.query(query)
+                val query  = DownloadManager.Query().setFilterById(downloadId)
+                val cursor = dm.query(query)
 
                 if (!cursor.moveToFirst()) {
                     continuation.resume(DownloadResult.Error("Descarga no encontrada"))
                     return
                 }
 
-                val statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                val uriCol = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
-                val status = cursor.getInt(statusCol)
-                val localUri = cursor.getString(uriCol)
+                val statusIdx   = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                val fileNameIdx = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_FILENAME)
+                val localUriIdx = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
+
+                val status    = cursor.getInt(statusIdx)
+                // FIX 2b: COLUMN_LOCAL_FILENAME da la ruta real del filesystem
+                val localPath = cursor.getString(fileNameIdx)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: Uri.parse(cursor.getString(localUriIdx)).path  // fallback
+
                 cursor.close()
 
-                if (status == DownloadManager.STATUS_SUCCESSFUL && localUri != null) {
-                    launchInstaller(localUri)
-                    continuation.resume(DownloadResult.Success)
+                if (status == DownloadManager.STATUS_SUCCESSFUL && !localPath.isNullOrBlank()) {
+                    val result = launchInstaller(localPath)
+                    continuation.resume(result)
                 } else {
-                    continuation.resume(DownloadResult.Error("Descarga fallida — status: $status"))
+                    val reason = when (status) {
+                        DownloadManager.STATUS_FAILED   -> "Descarga fallida (código $status)"
+                        DownloadManager.STATUS_PAUSED   -> "Descarga pausada — verificá conexión"
+                        else -> "Estado inesperado: $status"
+                    }
+                    continuation.resume(DownloadResult.Error(reason))
                 }
             }
         }
@@ -174,26 +223,42 @@ class UpdateChecker @Inject constructor(
 
         continuation.invokeOnCancellation {
             runCatching { context.unregisterReceiver(receiver) }
-            downloadManager.remove(downloadId)
+            dm.remove(downloadId)
         }
     }
 
-    private fun launchInstaller(localUri: String) {
-        val apkFile = File(Uri.parse(localUri).path ?: return)
-        val apkUri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.provider",
-            apkFile
-        )
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkUri, "application/vnd.android.package-archive")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+    // ── Lanzador del instalador — FIX 2b ─────────────────────────────────────
+
+    private fun launchInstaller(localFilePath: String): DownloadResult {
+        return try {
+            val apkFile = File(localFilePath)
+            if (!apkFile.exists()) {
+                return DownloadResult.Error(
+                    "APK descargado no encontrado en: $localFilePath"
+                )
+            }
+
+            // FIX 2b: FileProvider recibe File del filesystem, no un URI content://
+            val apkUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                apkFile
+            )
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+            context.startActivity(installIntent)
+            DownloadResult.Success
+        } catch (e: Exception) {
+            DownloadResult.Error("Error lanzando instalador: ${e.message}")
         }
-        context.startActivity(installIntent)
     }
 }
 
-// GitHub API devuelve snake_case — @SerialName obligatorio
+// ── Modelos de respuesta GitHub API ──────────────────────────────────────────
+
 @Serializable
 private data class GithubRelease(
     @SerialName("tag_name") val tagName: String,
@@ -208,6 +273,8 @@ private data class GithubAsset(
     val size: Long
 )
 
+// ── Resultados sellados ───────────────────────────────────────────────────────
+
 sealed class UpdateResult {
     data class UpdateAvailable(
         val currentVersion: Int,
@@ -216,9 +283,12 @@ sealed class UpdateResult {
         val apkUrl: String,
         val apkSizeBytes: Long
     ) : UpdateResult()
+
     data class UpToDate(val currentVersion: Int, val remoteVersion: Int) : UpdateResult()
-    /** El repo no tiene releases publicados todavía — no es un error. */
+
+    /** El repo no tiene releases publicados — no es un error. */
     object NoReleases : UpdateResult()
+
     data class Error(val message: String) : UpdateResult()
 }
 

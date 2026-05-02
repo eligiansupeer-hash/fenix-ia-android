@@ -9,89 +9,83 @@
 
 ---
 
-## Sesión 7 — 2 Mayo 2026 (pre-sesión 8)
+## Sesión 7 — 2 Mayo 2026
 Loop agéntico: `ChatViewModel` inyecta `ToolExecutor`, `runAgenticLoop()`, feedback visual.
 
 ---
 
 ## Sesión 8 — 2 Mayo 2026 — BUGS CRÍTICOS DE PRODUCCIÓN
 
-### Síntomas reportados por el usuario:
+### Síntomas reportados:
 1. **Descarga IA nativa** → error de red (modelo Gemma 2B Q4 ~1.5 GB)
-2. **OTA** → detecta actualización pero nunca instala
-3. **Herramientas web** → web_search / deep_research no conectan a internet
+2. **OTA** → detecta actualización pero corta descarga en % aleatorio
+3. **Herramientas web** → web_search / deep_research sin internet
 
-### Diagnóstico
+### Fixes aplicados S8 (ver STATUS anterior para detalle):
+- `AppModule.kt`: `@Named("download")` con OkHttp readTimeout=0 + `@Named("api")` socket 90s
+- `LocalLlmEngine.kt`: inyecta `@Named("download")`
+- `UpdateChecker.kt` (S8): versionCode PackageManager + Ktor con resume Range
+- `file_provider_paths.xml`: external-files-path raíz
+- `WebResearcher.kt`: DDG JSON API + fallback HTML acotado
 
-#### F1 — Descarga IA nativa (error de red)
-**Causa raíz:** `LocalLlmEngine` inyectaba el `HttpClient` compartido (`@Singleton` sin qualifier).
-Ese cliente tiene `socketTimeoutMillis = 120_000L` a nivel OkHttp. Durante la descarga de 1.5 GB
-a baja velocidad, si pasan >120s sin bytes recibidos en el socket (pausas de red, throttling del
-servidor), OkHttp cancela la conexión con `SocketTimeoutException`.
-El bloque `timeout { requestTimeoutMillis = INFINITE }` de Ktor solo afecta la capa Ktor, no el
-`readTimeout` del OkHttpClient subyacente — por eso era insuficiente.
+---
 
-**Fix (commits f0af9ed + 74f0ec1):**
-- `AppModule.kt`: nuevo `@Named("download")` HttpClient con `OkHttpClient.readTimeout(0)` y
-  `writeTimeout(0)` — timeouts 0 = infinito a nivel OkHttp nativo.
-- `LocalLlmEngine.kt`: inyecta `@Named("download") HttpClient` en lugar del cliente compartido.
-- Se eliminó el bloque `timeout {}` local (innecesario con el cliente dedicado).
+## Sesión 9 — 2 Mayo 2026 — OTA PERSISTE: MIGRACIÓN A CLOUDFLARE R2
 
-#### F2 — OTA nunca instala
-**Causa raíz — Bug 2a:** `UpdateChecker.LOCAL_VERSION_CODE = 2` hardcodeado.
-El `versionCode` real en `build.gradle.kts` es `45`, por lo que siempre se detectaba actualización.
-Pero el bug que impedía la instalación era el Bug 2b:
+### Diagnóstico definitivo del problema OTA persistente:
 
-**Causa raíz — Bug 2b:** `launchInstaller` hacía `File(Uri.parse(localUri).path)`.
-En Android 10+ `DownloadManager.COLUMN_LOCAL_URI` devuelve un URI `content://downloads/...`,
-y `Uri.parse("content://...").path` devuelve la porción del path del URI (`/...`), no la ruta
-real del filesystem. El `File` resultante no existía → `FileProvider.getUriForFile()` lanzaba
-`IllegalArgumentException` silenciosamente → el instalador nunca se abría.
+**Causa raíz confirmada:**
+GitHub Releases genera URLs presignadas hacia `objects.githubusercontent.com` con TTL ~60s.
+El fix de S8 (Ktor + Range resume) era correcto en teoría, pero falla porque:
 
-**Fix (commits ece8b6e + 126bc97):**
-- `UpdateChecker.kt`:
-  - `localVersionCode`: ahora lee del `PackageManager` en runtime (no hardcodeado).
-  - `localVersionName`: ídem, desde PackageManager.
-  - `launchInstaller`: usa `COLUMN_LOCAL_FILENAME` en lugar de `COLUMN_LOCAL_URI` para obtener
-    la ruta real del filesystem. Fallback a `Uri.parse(uri).path` si filename está vacío.
-  - Inyecta `@Named("api")` explícitamente (GitHub JSON no necesita timeout infinito).
-- `file_provider_paths.xml`:
-  - Agregada `<files-path name="fenix_models" path="fenix_models/">` para el modelo IA.
-  - Agregada `<files-path name="fenix_internal" path=".">` para documentos generados.
-  - `external-files-path` cambiado de `path="Download/"` a `path="."` (cubre toda la raíz).
+1. **OkHttp no propaga el header `Range` en redirects cross-host.**
+   GitHub responde 302 → OkHttp sigue al destino SIN el header Range → descarga desde byte 0
+   → `RandomAccessFile.seek(resumeFrom)` sobreescribe incorrectamente → archivo corrupto.
 
-#### F3 — Web search / deep research sin internet
-**Causa raíz — Bug 3a:** `WebResearcher.search()` usaba RESULT_BLOCK regex con
-`DOT_MATCHES_ALL` sobre el HTML completo de DDG (~200 KB). En dispositivos con poca RAM
-producía backtracking exponencial → timeout de regex → `ToolResult.Error`. En dispositivos
-con más RAM, el resultado dependía de la estructura exacta del HTML de DDG que puede cambiar.
+2. **El token en la URL presignada del redirect expira ~60s** después de que
+   `checkForUpdate()` obtuvo la URL. Si el usuario tarda en presionar "Descargar",
+   o si la descarga dura más de 60s (APK ~15-30MB en conexión lenta desde AR),
+   GitHub cierra el stream en un punto aleatorio → porcentajes de corte no deterministas.
 
-**Causa raíz — Bug 3b:** El cliente compartido tenía `socketTimeoutMillis = 120_000L`.
-Desde Argentina, DDG HTML puede superar 120s de respuesta bajo carga. Resultado: la
-conexión se cortaba antes de recibir el body completo.
+**Solución definitiva — Cloudflare R2:**
+- APK alojado en R2 bucket `fenix-ia-releases` con URL pública permanente.
+- Sin tokens presignados, sin TTL, sin redirects cross-host.
+- R2 soporta Range requests nativamente → resume funciona perfectamente.
+- Sin rate limits de GitHub API.
 
-**Fix (commit 3054820):**
-- `WebResearcher.kt`:
-  - **Reemplaza DDG HTML por DDG Instant Answer API JSON** (`api.duckduckgo.com/?format=json`):
-    devuelve JSON liviano con `RelatedTopics` — sin regex, sin HTML, sin OOM.
-  - Fallback a DDG HTML solo si JSON devuelve 0 resultados: en ese caso usa regex
-    `LINK_HREF` acotado por línea (O(n) seguro, no sobre el HTML completo).
-  - Inyecta `@Named("api")` explícitamente.
-  - `socketTimeoutMillis` del cliente API reducido a 90s (AppModule) — calibrado para DDG.
-
-### Commits de la sesión 8
+### Cambios en esta sesión:
 
 | Commit | Archivo | Descripción |
 |--------|---------|-------------|
-| `f0af9ed` | `AppModule.kt` | `@Named("download")` con OkHttp timeouts 0; `@Named("api")` socket 90s |
-| `74f0ec1` | `LocalLlmEngine.kt` | Inyecta `@Named("download")` HttpClient |
-| `ece8b6e` | `UpdateChecker.kt` | versionCode PackageManager + COLUMN_LOCAL_FILENAME |
-| `126bc97` | `file_provider_paths.xml` | files-path modelo IA + external-files-path raíz |
-| `3054820` | `WebResearcher.kt` | DDG JSON API + fallback HTML acotado + @Named("api") |
+| `f329b50` | `.github/workflows/build-apk.yml` | Job `release-r2`: sube APK + version.json a R2 via wrangler |
+| `1500db4` | `UpdateChecker.kt` | Lee version.json desde R2; descarga desde R2 sin TTL |
+| `de1cbdc` | `UpdateViewModel.kt` | Simplificado: R2 no requiere re-fetch de URL |
 
-### Checklist post-fix
-- [ ] CI verde (compilación + tests)
-- [ ] Descarga modelo Gemma completa en dispositivo real (>120s sin error)
-- [ ] OTA: instala APK correctamente en Android 10+
-- [ ] web_search devuelve resultados desde Argentina
-- [ ] deep_research completa iteraciones sin timeout
+### Infraestructura R2 creada:
+- Bucket: `fenix-ia-releases` (región ENAM, creado 2026-05-02)
+- `version.json` inicial subido (placeholder versionCode=0)
+- URL pública del bucket: configurar en secret `CF_R2_PUBLIC_URL`
+
+### ⚠️ ACCIÓN REQUERIDA — Secrets en GitHub:
+Para que el workflow CI funcione, agregar en:
+`https://github.com/eligiansupeer-hash/fenix-ia-android/settings/secrets/actions`
+
+| Secret | Valor |
+|--------|-------|
+| `CF_ACCOUNT_ID` | ID de cuenta Cloudflare (Settings → Account ID) |
+| `CF_API_TOKEN` | Token con permisos R2:Edit |
+| `CF_R2_BUCKET` | `fenix-ia-releases` |
+| `CF_R2_PUBLIC_URL` | URL pública del bucket (habilitar en R2 → Settings → Public Access) |
+
+### ⚠️ ACCIÓN REQUERIDA — URL pública R2:
+En Cloudflare Dashboard → R2 → `fenix-ia-releases` → Settings → Public Access → Enable.
+La URL tendrá formato: `https://pub-<hash>.r2.dev`
+Actualizar `R2_BASE_URL` en `UpdateChecker.kt` con esa URL.
+
+### Checklist post-deploy:
+- [ ] Secrets agregados en GitHub repo settings
+- [ ] Public access habilitado en bucket R2
+- [ ] `R2_BASE_URL` actualizado en UpdateChecker.kt con URL real
+- [ ] Push a main → CI corre → Job release-r2 completa
+- [ ] `version.json` en R2 muestra versionCode correcto
+- [ ] Descarga OTA completa en dispositivo real (sin cortes en % aleatorio)

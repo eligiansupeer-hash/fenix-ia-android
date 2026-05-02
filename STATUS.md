@@ -54,13 +54,34 @@ Verificados en repo:
 **Problema:** `versionCode = 2` hardcodeado → todas las releases quedaban como `v2`.
 
 **Solución implementada en `build-apk.yml`:**
-- Nuevo Job 1 `bump-version` (solo en push a main, antes de compilar):
-  - Lee `versionCode` actual de `build.gradle.kts`
-  - Incrementa +1
-  - Actualiza `versionName` → `"1.0.{versionCode}"`
-  - Commit con `[skip ci]` para no disparar ciclo infinito
-  - Push a main
-- Jobs siguientes hacen `checkout ref: main` para tomar el código bumpeado
-- Job `release` lee el versionCode ya actualizado del archivo
+- Nuevo Job 1 `bump-version` (solo en push a main, antes de compilar)
+- Lee `versionCode` actual, incrementa +1, actualiza `versionName` → `"1.0.{versionCode}"`
+- Commit con `[skip ci]`. Resultado: cada push genera `v3`, `v4`, `v5`... secuencialmente.
 
-**Resultado:** cada push a main genera `v3`, `v4`, `v5`... secuencialmente.
+## Sesión 4 — 2 Mayo 2026
+
+### Fix de compilación previo a sesión
+**Problema:** `MessageRepositoryImpl.kt` compilaba con error porque `MessageEntity` (con `attachmentUris: String?` agregada en sesión anterior) no estaba reflejada en el modelo de dominio `Message` ni en los mappers.
+**Fix (2 commits):**
+- `Message.kt`: agrega `val attachmentUris: List<String> = emptyList()`
+- `MessageRepositoryImpl.kt`: mappers actualizados — CSV ↔ List<String>
+
+### P4 — Chats Generales — COMPLETADA
+- `GeneralChatListScreen.kt` — CREADA: pantalla reactiva con FAB para crear, lista vacía ilustrada
+- `FenixNavHost.kt` — ACTUALIZADO: rutas `GENERAL_CHATS_LIST` y `CHAT_GENERAL` + helper `chatGeneral()`; `ProjectListScreen` recibe `onNavigateToGeneralChats`
+
+### P5 — Herramientas por Chat — COMPLETADA
+- `ChatToolSelectorSheet.kt` — CREADA: `ModalBottomSheet` con `Switch` por tool; badge en TopBar cuenta tools activas
+- `ChatContract.kt` — ACTUALIZADO: `ToggleTool`, `AddAttachmentUri`, `ClearPendingAttachments` en `ChatIntent`; `allTools`, `enabledToolIds`, `pendingAttachmentUris` en `ChatUiState`
+- `ChatViewModel.kt` — ACTUALIZADO: inyecta `ToolRepository`, carga tools al `loadChat()`, implementa `toggleTool()`, pasa tools al `llmRouter.streamCompletion(tools = activeTools)`
+
+### P6 — Adjuntos de Archivos — COMPLETADA
+- `ChatViewModel.kt`: `sendMessage()` combina `pendingAttachmentUris` + adjuntos explícitos; guarda `attachmentUris` en `Message`; limpia pendientes tras envío; salta carga de documentos si `projectId` vacío (chat general)
+- `ChatScreen.kt` — ACTUALIZADO: `rememberLauncherForActivityResult(OpenMultipleDocuments)` para file picker; `PendingAttachmentsBar` visible cuando hay adjuntos; botón 📎 en `ChatInputBar`; indicador de adjuntos en `MessageBubble`; botón 🔧 de tools con badge
+
+### S7 — Tests de Verificación — COMPLETADA
+- `ToolCallingPipelineTest.kt` — CREADO: 12 tests unitarios puros (sin Android/Hilt) que verifican detección de tool calls en formato inyectado `<tool_call>` y formato nativo OpenAI `delta.tool_calls[0].function`
+
+### Pendiente para próxima sesión
+- Verificar que `ProjectListScreen` compile con el nuevo parámetro `onNavigateToGeneralChats`
+- Revisar si `GeminiApiClientTest.kt` y `LocalModelDownloadTest.kt` (S7) fueron aplicados en sesiones anteriores o deben crearse

@@ -13,13 +13,13 @@ on:
 #   Job 2 — compile       → compileDebugKotlin
 #   Job 3 — unit-tests    → testDebugUnitTest   (solo si compile pasa)
 #   Job 4 — build-apk     → assembleDebug       (solo si tests pasan)
-#   Job 5 — release       → Sube APK + version.json a Cloudflare R2 (OTA estable)
+#   Job 5 — release-r2    → Sube APK + version.json a Cloudflare R2 (OTA estable)
 #
 # DISTRIBUCIÓN OTA via Cloudflare R2:
 #   - APK publicado en: https://pub-<HASH>.r2.dev/fenix-ia-latest.apk
 #   - Metadata en:      https://pub-<HASH>.r2.dev/version.json
 #   - URLs permanentes, sin TTL, sin tokens presignados → descarga estable.
-#   - Secrets requeridos: CF_ACCOUNT_ID, CF_API_TOKEN, CF_R2_BUCKET_NAME,
+#   - Secrets requeridos: CF_ACCOUNT_ID, CF_API_TOKEN, CF_R2_BUCKET,
 #                         CF_R2_PUBLIC_URL (URL pública del bucket, sin trailing slash)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -218,9 +218,9 @@ jobs:
   # JOB 5: Publicar en Cloudflare R2 (OTA estable)
   #
   # Secrets requeridos en el repositorio:
-  #   CF_ACCOUNT_ID   → ID de cuenta Cloudflare (Settings → Account ID)
-  #   CF_API_TOKEN    → API token con permisos R2:Edit
-  #   CF_R2_BUCKET    → nombre del bucket: fenix-ia-releases
+  #   CF_ACCOUNT_ID    → ID de cuenta Cloudflare (Settings → Account ID)
+  #   CF_API_TOKEN     → API token con permisos R2:Edit
+  #   CF_R2_BUCKET     → nombre del bucket: fenix-ia-releases
   #   CF_R2_PUBLIC_URL → URL pública del bucket SIN trailing slash
   #                      Ej: https://pub-xxxxxxxxxxxxxxxx.r2.dev
   # ──────────────────────────────────────────────────────────────────────────
@@ -235,6 +235,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+
+      # FIX: wrangler requiere Node >= 22. ubuntu-latest trae Node 20 por defecto.
+      - name: Node.js 22 (requerido por wrangler)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Leer versión desde build.gradle.kts
         id: version
@@ -251,10 +257,8 @@ jobs:
           name: apk-for-release
           path: ./apk-output/
 
-      - name: Renombrar APK con versión
-        run: |
-          mv ./apk-output/app-debug.apk \
-             ./apk-output/fenix-ia-latest.apk
+      - name: Renombrar APK
+        run: mv ./apk-output/app-debug.apk ./apk-output/fenix-ia-latest.apk
 
       - name: Instalar wrangler
         run: npm install -g wrangler@latest
@@ -291,7 +295,6 @@ jobs:
           }
           EOF
 
-          echo "📋 version.json:"
           cat version.json
 
           wrangler r2 object put \
@@ -309,5 +312,3 @@ jobs:
           echo "| versionCode | \`$VERSION_CODE\` |" >> $GITHUB_STEP_SUMMARY
           echo "| APK | \`${PUBLIC_URL}/fenix-ia-latest.apk\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Metadata | \`${PUBLIC_URL}/version.json\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ URL estable sin TTL — descarga no se corta por token expirado." >> $GITHUB_STEP_SUMMARY

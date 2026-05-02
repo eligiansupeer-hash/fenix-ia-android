@@ -7,6 +7,13 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Siembra el catálogo de herramientas si está vacío.
+ *
+ * CORRECCIÓN P3: todos los inputSchema siguen el estándar OpenAPI JSON Schema:
+ *   { "type": "object", "properties": { ... }, "required": [...] }
+ * Sin este formato los proveedores remotos (Gemini, OpenAI) rechazan el Tool Calling.
+ */
 @Singleton
 class ToolSeeder @Inject constructor(
     private val toolRepository: ToolRepository
@@ -15,95 +22,69 @@ class ToolSeeder @Inject constructor(
         if (toolRepository.getEnabledTools().isNotEmpty()) return
 
         val catalog = listOf(
-            // DOCUMENTALES
+            // ── DOCUMENTALES ─────────────────────────────────────────────────
             makeTool(
-                "create_docx", "Crea archivo .docx con Apache POI",
-                """{"title":"string","content":"string","outputPath":"string"}""",
-                """{"path":"string","success":"boolean"}""",
+                "create_file",
+                "Crea un archivo de texto en el almacenamiento del proyecto",
+                """{"type":"object","properties":{"fileName":{"type":"string"},"content":{"type":"string"},"projectId":{"type":"string"}},"required":["fileName","content","projectId"]}""",
                 listOf("WRITE_EXTERNAL_STORAGE"), ToolExecutionType.NATIVE_KOTLIN
             ),
             makeTool(
-                "create_pdf", "Genera PDF con android.graphics.pdf.PdfDocument",
-                """{"title":"string","content":"string","outputPath":"string"}""",
-                """{"path":"string","pages":"number"}""",
-                listOf("WRITE_EXTERNAL_STORAGE"), ToolExecutionType.NATIVE_KOTLIN
-            ),
-            makeTool(
-                "summarize", "Resume texto largo manteniendo ideas clave",
-                """{"text":"string","maxWords":"number"}""",
-                """{"summary":"string"}""",
-                emptyList(), ToolExecutionType.NATIVE_KOTLIN
-            ),
-            makeTool(
-                "translate", "Traduce texto entre idiomas via LLM",
-                """{"text":"string","targetLang":"string"}""",
-                """{"translated":"string"}""",
-                emptyList(), ToolExecutionType.NATIVE_KOTLIN
-            ),
-            // SISTEMA DE ARCHIVOS
-            makeTool(
-                "read_file", "Lee archivo via stream (sin cargar entero en heap)",
-                """{"path":"string","maxChars":"number"}""",
-                """{"content":"string","truncated":"boolean"}""",
+                "read_file",
+                "Lee un archivo de texto desde una ruta dada",
+                """{"type":"object","properties":{"path":{"type":"string"},"maxChars":{"type":"number"}},"required":["path"]}""",
                 listOf("READ_EXTERNAL_STORAGE"), ToolExecutionType.NATIVE_KOTLIN
             ),
             makeTool(
-                "create_file", "Crea archivo de texto en Scoped Storage del proyecto",
-                """{"fileName":"string","content":"string","projectId":"string"}""",
-                """{"path":"string","success":"boolean"}""",
-                listOf("WRITE_EXTERNAL_STORAGE"), ToolExecutionType.NATIVE_KOTLIN
-            ),
-            makeTool(
-                "search_in_project", "Busca en documentos indexados de un proyecto",
-                """{"query":"string","projectId":"string","limit":"number"}""",
-                """{"results":[{"docName":"string","snippet":"string"}]}""",
+                "summarize",
+                "Genera un resumen conciso de un texto largo",
+                """{"type":"object","properties":{"text":{"type":"string"},"maxWords":{"type":"number"}},"required":["text"]}""",
                 emptyList(), ToolExecutionType.NATIVE_KOTLIN
             ),
-            // MEMORIA / RAG
+            // ── BÚSQUEDA Y RAG ───────────────────────────────────────────────
             makeTool(
-                "store_knowledge", "Indexa texto en ObjectBox para RAG futuro",
-                """{"text":"string","projectId":"string","tag":"string"}""",
-                """{"chunksStored":"number"}""",
+                "search_in_project",
+                "Busca contenido en documentos indexados de un proyecto",
+                """{"type":"object","properties":{"query":{"type":"string"},"projectId":{"type":"string"},"limit":{"type":"number"}},"required":["query","projectId"]}""",
                 emptyList(), ToolExecutionType.NATIVE_KOTLIN
             ),
             makeTool(
-                "retrieve_context", "Recupera fragmentos HNSW del RAG local",
-                """{"query":"string","projectId":"string","limit":"number"}""",
-                """{"chunks":[{"text":"string","score":"number"}]}""",
+                "store_knowledge",
+                "Indexa texto en la base vectorial local para recuperación futura (RAG)",
+                """{"type":"object","properties":{"text":{"type":"string"},"projectId":{"type":"string"}},"required":["text"]}""",
                 emptyList(), ToolExecutionType.NATIVE_KOTLIN
             ),
-            // INTERNET
             makeTool(
-                "web_search", "Busca en DuckDuckGo HTML estatico sin API key",
-                """{"query":"string","maxResults":"number"}""",
-                """{"results":[{"title":"string","url":"string","snippet":"string"}]}""",
+                "retrieve_context",
+                "Recupera fragmentos semánticos relevantes del RAG local",
+                """{"type":"object","properties":{"query":{"type":"string"},"projectId":{"type":"string"},"limit":{"type":"number"}},"required":["query"]}""",
+                emptyList(), ToolExecutionType.NATIVE_KOTLIN
+            ),
+            // ── INTERNET ─────────────────────────────────────────────────────
+            makeTool(
+                "web_search",
+                "Realiza una búsqueda en la web sin requerir API key",
+                """{"type":"object","properties":{"query":{"type":"string"},"maxResults":{"type":"number"}},"required":["query"]}""",
                 listOf("INTERNET"), ToolExecutionType.NATIVE_KOTLIN
             ),
             makeTool(
-                "scrape_content", "Extrae contenido semantico de URL con Ksoup",
-                """{"url":"string","cssSelector":"string"}""",
-                """{"content":"string","title":"string"}""",
+                "scrape_content",
+                "Extrae el contenido principal de una URL",
+                """{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}""",
                 listOf("INTERNET"), ToolExecutionType.NATIVE_KOTLIN
             ),
             makeTool(
-                "deep_research", "Orquesta busquedas iterativas con sintesis final",
-                """{"topic":"string","depth":"number","projectId":"string"}""",
-                """{"report":"string","sources":[{"url":"string"}]}""",
+                "deep_research",
+                "Orquesta búsquedas iterativas con síntesis final sobre un tema",
+                """{"type":"object","properties":{"topic":{"type":"string"},"depth":{"type":"number"},"projectId":{"type":"string"}},"required":["topic"]}""",
                 listOf("INTERNET"), ToolExecutionType.NATIVE_KOTLIN
             ),
-            // CODIGO
+            // ── CÓDIGO ───────────────────────────────────────────────────────
             makeTool(
-                "run_code", "Ejecuta ES6 en JavaScriptSandbox (32MB, 10s timeout)",
-                """{"code":"string","inputData":"string"}""",
-                """{"result":"string","error":"string"}""",
+                "run_code",
+                "Ejecuta código JavaScript ES6 en un entorno sandbox seguro",
+                """{"type":"object","properties":{"code":{"type":"string"},"inputData":{"type":"string"}},"required":["code"]}""",
                 emptyList(), ToolExecutionType.JAVASCRIPT
-            ),
-            // SISTEMA INTERNO
-            makeTool(
-                "create_new_tool", "Genera y registra nueva herramienta en catalogo",
-                """{"name":"string","description":"string","jsBody":"string","inputSchema":"string"}""",
-                """{"toolId":"string","success":"boolean"}""",
-                emptyList(), ToolExecutionType.NATIVE_KOTLIN
             )
         )
 
@@ -114,20 +95,19 @@ class ToolSeeder @Inject constructor(
         name: String,
         desc: String,
         inSchema: String,
-        outSchema: String,
         perms: List<String>,
         type: ToolExecutionType
     ) = Tool(
-        id = UUID.randomUUID().toString(),
-        name = name,
-        description = desc,
-        inputSchema = inSchema,
-        outputSchema = outSchema,
-        permissions = perms,
+        id            = UUID.randomUUID().toString(),
+        name          = name,
+        description   = desc,
+        inputSchema   = inSchema,
+        outputSchema  = "{\"type\":\"object\"}",
+        permissions   = perms,
         executionType = type,
-        jsBody = null,
-        isEnabled = true,
+        jsBody        = null,
+        isEnabled     = true,
         isUserGenerated = false,
-        createdAt = System.currentTimeMillis()
+        createdAt     = System.currentTimeMillis()
     )
 }

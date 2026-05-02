@@ -15,6 +15,7 @@ import com.fenix.ia.domain.repository.ApiKeyRepository
 import com.fenix.ia.domain.repository.DocumentRepository
 import com.fenix.ia.domain.repository.MessageRepository
 import com.fenix.ia.domain.repository.ToolRepository
+import com.fenix.ia.domain.repository.UserPrefsRepository
 import com.fenix.ia.local.LocalLlmEngine
 import com.fenix.ia.tools.ToolCallParser
 import com.fenix.ia.tools.ToolExecutor
@@ -36,7 +37,8 @@ class ChatViewModel @Inject constructor(
     private val apiKeyRepository: ApiKeyRepository,
     private val localLlmEngine: LocalLlmEngine,
     private val toolRepository: ToolRepository,
-    private val toolExecutor: ToolExecutor          // LOOP AGÉNTICO: ejecuta tool calls
+    private val toolExecutor: ToolExecutor,
+    private val userPrefsRepository: UserPrefsRepository   // límite de iteraciones configurable
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -54,7 +56,6 @@ class ChatViewModel @Inject constructor(
         private const val CHARS_PER_TOKEN = 4
         private const val RAG_CHUNK_LIMIT = 20
         private const val MAX_HISTORY_MESSAGES = 30
-        private const val MAX_AGENTIC_ITERATIONS = 5   // freno anti-bucle
     }
 
     fun loadChat(chatId: String, projectId: String) {
@@ -149,11 +150,11 @@ class ChatViewModel @Inject constructor(
             val allAttachmentUris = (attachmentUris + _uiState.value.pendingAttachmentUris).distinct()
 
             val userMessage = Message(
-                id = UUID.randomUUID().toString(),
-                chatId = currentChatId,
-                role = MessageRole.USER,
-                content = content,
-                timestamp = System.currentTimeMillis(),
+                id             = UUID.randomUUID().toString(),
+                chatId         = currentChatId,
+                role           = MessageRole.USER,
+                content        = content,
+                timestamp      = System.currentTimeMillis(),
                 attachmentUris = allAttachmentUris
             )
             messageRepository.insertMessage(userMessage)
@@ -169,21 +170,24 @@ class ChatViewModel @Inject constructor(
             val provider = _uiState.value.selectedProvider
                 ?: llmRouter.selectProvider(
                     estimatedTokens = estimatedTokens,
-                    taskType = detectTaskType(content)
+                    taskType        = detectTaskType(content)
                 )
 
             val activeTools = _uiState.value.allTools
                 .filter { it.id in _uiState.value.enabledToolIds }
 
+            // Lee el límite configurado por el usuario en el momento de enviar
+            val maxIterations = userPrefsRepository.getMaxAgenticIterations()
+
             _uiState.update {
                 it.copy(
-                    isStreaming = true,
-                    streamingBuffer = "",
-                    activeProvider = provider,
-                    contextMode = contextMode,
+                    isStreaming          = true,
+                    streamingBuffer      = "",
+                    activeProvider       = provider,
+                    contextMode          = contextMode,
                     contextDocumentCount = checkedDocs.size,
-                    contextTokenCount = estimatedTokens,
-                    error = null
+                    contextTokenCount    = estimatedTokens,
+                    error                = null
                 )
             }
 
@@ -191,8 +195,7 @@ class ChatViewModel @Inject constructor(
                 val history = _uiState.value.messages
                     .takeLast(MAX_HISTORY_MESSAGES)
                     .map { LlmMessage(role = it.role.name.lowercase(), content = it.content) }
-
-                runAgenticLoop(history, systemPrompt, provider, activeTools)
+                runAgenticLoop(history, systemPrompt, provider, activeTools, maxIterations)
             }
         }
     }
@@ -200,11 +203,9 @@ class ChatViewModel @Inject constructor(
     private fun regenerateLastMessage() {
         viewModelScope.launch {
             if (_uiState.value.isStreaming) return@launch
-            val messages = _uiState.value.messages
-            val lastAssistant =
-                messages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return@launch
-            val lastUserContent =
-                messages.lastOrNull { it.role == MessageRole.USER }?.content ?: return@launch
+            val messages      = _uiState.value.messages
+            val lastAssistant = messages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return@launch
+            val lastUserContent = messages.lastOrNull { it.role == MessageRole.USER }?.content ?: return@launch
 
             messageRepository.deleteMessage(lastAssistant.id)
 
@@ -218,11 +219,11 @@ class ChatViewModel @Inject constructor(
             val provider = _uiState.value.selectedProvider
                 ?: llmRouter.selectProvider(
                     estimatedTokens = estimatedTokens,
-                    taskType = detectTaskType(lastUserContent)
+                    taskType        = detectTaskType(lastUserContent)
                 )
 
-            val activeTools = _uiState.value.allTools
-                .filter { it.id in _uiState.value.enabledToolIds }
+            val activeTools   = _uiState.value.allTools.filter { it.id in _uiState.value.enabledToolIds }
+            val maxIterations = userPrefsRepository.getMaxAgenticIterations()
 
             val history = messages
                 .filter { it.id != lastAssistant.id }
@@ -231,55 +232,48 @@ class ChatViewModel @Inject constructor(
 
             _uiState.update {
                 it.copy(
-                    isStreaming = true,
-                    streamingBuffer = "",
-                    activeProvider = provider,
-                    contextMode = contextMode,
+                    isStreaming          = true,
+                    streamingBuffer      = "",
+                    activeProvider       = provider,
+                    contextMode          = contextMode,
                     contextDocumentCount = checkedDocs.size,
-                    contextTokenCount = estimatedTokens,
-                    error = null
+                    contextTokenCount    = estimatedTokens,
+                    error                = null
                 )
             }
 
             streamingJob = viewModelScope.launch {
-                runAgenticLoop(history, systemPrompt, provider, activeTools)
+                runAgenticLoop(history, systemPrompt, provider, activeTools, maxIterations)
             }
         }
     }
 
-    // ── LOOP AGÉNTICO ────────────────────────────────────────────────────────
+    // ── LOOP AGÉNTICO ─────────────────────────────────────────────────────────
     /**
-     * Ejecuta hasta MAX_AGENTIC_ITERATIONS ciclos:
-     *   1. Llama al LLM y acumula el stream en el buffer visible
-     *   2. Si la respuesta contiene <tool_call>, extrae las llamadas
-     *   3. Ejecuta cada tool via ToolExecutor
-     *   4. Inyecta los resultados como mensaje "tool" en el historial
-     *   5. Vuelve a llamar al LLM con el historial ampliado
-     *   6. Si no hay tool calls → persiste la respuesta final y termina
+     * maxIterations: leído desde UserPrefsRepository (default 10, rango 1–25).
+     * Cada iteración:
+     *   1. Llama al LLM → acumula stream
+     *   2. Sin tool_call → persiste respuesta final, termina
+     *   3. Con tool_call → ejecuta via ToolExecutor, inyecta resultado en historial, itera
      */
     private suspend fun runAgenticLoop(
         initialHistory: List<LlmMessage>,
         systemPrompt: String,
         provider: ApiProvider,
-        activeTools: List<com.fenix.ia.domain.model.Tool>
+        activeTools: List<com.fenix.ia.domain.model.Tool>,
+        maxIterations: Int
     ) {
-        var history = initialHistory.toMutableList()
+        val history   = initialHistory.toMutableList()
         var iteration = 0
 
-        while (iteration < MAX_AGENTIC_ITERATIONS) {
+        while (iteration < maxIterations) {
             iteration++
 
-            // 1. Llamar al LLM y acumular en streamingBuffer
             val llmOutput = collectStreamToString(history, systemPrompt, provider, activeTools)
+                ?: return   // error ya propagado al uiState
 
-            if (llmOutput == null) {
-                // Error ya emitido dentro de collectStreamToString
-                return
-            }
-
-            // 2. ¿Hay tool calls en la respuesta?
             if (!ToolCallParser.hasToolCall(llmOutput)) {
-                // Sin tool calls → respuesta final, persistir y salir
+                // Respuesta final sin tool calls — persistir y salir
                 val visibleText = llmOutput.trim()
                 if (visibleText.isNotBlank()) {
                     messageRepository.insertMessage(
@@ -296,64 +290,48 @@ class ChatViewModel @Inject constructor(
                 return
             }
 
-            // 3. Extraer tool calls
             val toolCalls = ToolCallParser.extractAll(llmOutput)
-            val visibleBeforeTools = ToolCallParser.stripToolCalls(llmOutput).trim()
-
-            // Mostrar al usuario el texto visible que precedió a las tool calls (si hay)
-            if (visibleBeforeTools.isNotBlank()) {
-                _uiState.update { it.copy(streamingBuffer = "⚙️ Ejecutando ${toolCalls.size} herramienta(s)...") }
-            } else {
-                _uiState.update { it.copy(streamingBuffer = "⚙️ Ejecutando ${toolCalls.size} herramienta(s)...") }
+            _uiState.update {
+                it.copy(streamingBuffer = "⚙️ Ejecutando ${toolCalls.size} herramienta(s)... (paso $iteration/$maxIterations)")
             }
 
-            // Añadir respuesta del asistente (con tool_calls) al historial interno
             history.add(LlmMessage("assistant", llmOutput))
 
-            // 4. Ejecutar cada tool y construir bloque de resultados
-            val toolResultsBuilder = StringBuilder()
-            toolCalls.forEach { call ->
-                val tool = activeTools.firstOrNull { it.name == call.name }
-                    ?: _uiState.value.allTools.firstOrNull { it.name == call.name }
+            val resultsBlock = buildString {
+                toolCalls.forEach { call ->
+                    val tool = activeTools.firstOrNull { it.name == call.name }
+                        ?: _uiState.value.allTools.firstOrNull { it.name == call.name }
 
-                val resultJson = if (tool == null) {
-                    """{"error":"Tool '${call.name}' no encontrada o no está habilitada en este chat."}"""
-                } else {
-                    when (val result = toolExecutor.execute(tool, call.argsJson)) {
-                        is ToolResult.Success -> result.outputJson
-                        is ToolResult.Error   -> """{"error":"${result.message.replace("\"", "'")}"}"""
+                    val resultJson = if (tool == null) {
+                        """{"error":"Tool '${call.name}' no encontrada o no habilitada en este chat."}"""
+                    } else {
+                        when (val r = toolExecutor.execute(tool, call.argsJson)) {
+                            is ToolResult.Success -> r.outputJson
+                            is ToolResult.Error   ->
+                                """{"error":"${r.message.replace("\"", "'")}"}"""
+                        }
                     }
+                    appendLine("RESULTADO DE HERRAMIENTA [${call.name}]:\n$resultJson")
                 }
-
-                toolResultsBuilder.appendLine(
-                    "RESULTADO DE HERRAMIENTA [${call.name}]:\n$resultJson"
-                )
             }
 
-            // 5. Inyectar resultados como mensaje "user" (formato que entienden todos los proveedores)
             history.add(LlmMessage("user",
-                "Los resultados de las herramientas son:\n\n${toolResultsBuilder.trim()}\n\n" +
+                "Los resultados de las herramientas son:\n\n${resultsBlock.trim()}\n\n" +
                 "Usando esta información, respondé la consulta original del usuario de forma clara y completa."
             ))
-
-            // Continuar el loop con el historial ampliado
         }
 
-        // Si se agotaron las iteraciones, avisar
+        // Se agotó el límite configurado
         _uiState.update {
             it.copy(
                 isStreaming     = false,
                 streamingBuffer = "",
-                error           = "El agente alcanzó el límite de $MAX_AGENTIC_ITERATIONS iteraciones."
+                error           = "El agente alcanzó el límite de $maxIterations iteraciones. " +
+                                  "Podés aumentarlo en Configuración → Agente."
             )
         }
     }
 
-    /**
-     * Colecta el stream del LLM en un String completo.
-     * Actualiza streamingBuffer en tiempo real para que el usuario vea la respuesta parcial.
-     * Retorna null si ocurrió un error (ya emitido al uiState).
-     */
     private suspend fun collectStreamToString(
         history: List<LlmMessage>,
         systemPrompt: String,
@@ -361,7 +339,7 @@ class ChatViewModel @Inject constructor(
         tools: List<com.fenix.ia.domain.model.Tool>
     ): String? {
         _uiState.update { it.copy(streamingBuffer = "") }
-        var output = ""
+        var output   = ""
         var hadError = false
 
         llmRouter.streamCompletion(
@@ -373,7 +351,6 @@ class ChatViewModel @Inject constructor(
             when (event) {
                 is StreamEvent.Token -> {
                     output += event.text
-                    // Mostrar solo el texto sin etiquetas tool_call en el buffer visible
                     _uiState.update {
                         it.copy(streamingBuffer = ToolCallParser.stripToolCalls(output))
                     }
@@ -381,7 +358,6 @@ class ChatViewModel @Inject constructor(
                 is StreamEvent.ProviderFallback ->
                     _uiState.update { it.copy(activeProvider = event.to) }
                 is StreamEvent.Error -> {
-                    // FASE 11: limpiar buffer en error
                     _uiState.update {
                         it.copy(isStreaming = false, streamingBuffer = "", error = event.message)
                     }
@@ -394,20 +370,22 @@ class ChatViewModel @Inject constructor(
         return if (hadError) null else output
     }
 
-    // ── Context building ─────────────────────────────────────────────────────
+    // ── Context building ──────────────────────────────────────────────────────
 
     private suspend fun buildContextForQuery(
         query: String,
         checkedDocs: List<DocumentNode>
     ): Triple<String, Int, ContextMode> {
         if (checkedDocs.isEmpty()) {
-            val prompt = "Eres FENIX IA, un asistente inteligente y preciso."
-            return Triple(prompt, estimateTokens(query), ContextMode.NONE)
+            return Triple(
+                "Eres FENIX IA, un asistente inteligente y preciso.",
+                estimateTokens(query),
+                ContextMode.NONE
+            )
         }
 
-        val docIds = checkedDocs.map { it.id }
+        val docIds         = checkedDocs.map { it.id }
         val totalDocTokens = ragEngine.estimateTotalTokens(docIds)
-
         val contextBlock: String
         val contextMode: ContextMode
 
@@ -423,35 +401,28 @@ class ChatViewModel @Inject constructor(
                         appendLine("════════════════════════════════")
                         appendLine("DOCUMENTO: $name")
                         appendLine("════════════════════════════════")
-                        appendLine(text)
-                        appendLine()
+                        appendLine(text); appendLine()
                     }
                 }
             }
         } else {
             contextMode = ContextMode.RAG
-            val relevantChunks =
-                ragEngine.searchInDocuments(query, docIds, limit = RAG_CHUNK_LIMIT)
-            contextBlock = if (relevantChunks.isEmpty()) {
+            val chunks = ragEngine.searchInDocuments(query, docIds, limit = RAG_CHUNK_LIMIT)
+            contextBlock = if (chunks.isEmpty()) {
                 "(No se encontraron fragmentos relevantes.)"
-            } else {
-                buildString {
-                    appendLine("Fragmentos más relevantes para la consulta:")
-                    appendLine()
-                    relevantChunks.forEachIndexed { i, chunk ->
-                        val name = checkedDocs.firstOrNull { it.id == chunk.documentNodeId }?.name
-                            ?: chunk.documentNodeId
-                        appendLine("── Fragmento ${i + 1} de «$name» ──")
-                        appendLine(chunk.textPayload)
-                        appendLine()
-                    }
+            } else buildString {
+                appendLine("Fragmentos más relevantes para la consulta:"); appendLine()
+                chunks.forEachIndexed { i, chunk ->
+                    val name = checkedDocs.firstOrNull { it.id == chunk.documentNodeId }?.name
+                        ?: chunk.documentNodeId
+                    appendLine("── Fragmento ${i + 1} de «$name» ──")
+                    appendLine(chunk.textPayload); appendLine()
                 }
             }
         }
 
         val systemPrompt = buildString {
-            appendLine("Eres FENIX IA, un asistente inteligente y preciso.")
-            appendLine()
+            appendLine("Eres FENIX IA, un asistente inteligente y preciso."); appendLine()
             appendLine("El usuario ha seleccionado los siguientes documentos como contexto:")
             checkedDocs.forEachIndexed { i, doc -> appendLine("  ${i + 1}. ${doc.name}") }
             appendLine()
@@ -467,14 +438,11 @@ class ChatViewModel @Inject constructor(
                 }
                 ContextMode.NONE -> {}
             }
-            appendLine()
-            appendLine("══════════════ CONTENIDO ══════════════")
-            append(contextBlock)
-            appendLine("══════════════ FIN ══════════════")
+            appendLine(); appendLine("══════════════ CONTENIDO ══════════════")
+            append(contextBlock); appendLine("══════════════ FIN ══════════════")
         }
 
-        val estimatedTokens = estimateTokens(systemPrompt) + estimateTokens(query)
-        return Triple(systemPrompt, estimatedTokens, contextMode)
+        return Triple(systemPrompt, estimateTokens(systemPrompt) + estimateTokens(query), contextMode)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -7,14 +7,12 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.*
-import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.BufferedOutputStream
@@ -37,10 +35,10 @@ class UpdateChecker @Inject constructor(
         private const val APK_FILENAME     = "fenix-ia-update.apk"
         private const val TMP_FILENAME     = "fenix-ia-update.apk.tmp"
         private const val MAX_RETRIES      = 3
-        private const val MIN_VALID_APK    = 1_000_000L          // 1 MB
-        private const val MAX_VALID_APK    = 100_000_000L        // 100 MB — límite de seguridad
-        private const val VERSION_JSON_MAX = 8_192L              // 8 KB — version.json nunca debe ser mayor
-        private const val CHUNK_SIZE       = 32 * 1024           // 32 KB — chunk conservador para 2 GB RAM
+        private const val MIN_VALID_FILE   = 1_000_000L   // 1 MB mínimo para considerar válido
+        private const val VERSION_JSON_MAX = 8_192L       // 8 KB — version.json nunca debe ser mayor
+        private const val CHUNK_SIZE       = 32 * 1024    // 32 KB — conservador para 2 GB RAM
+        // Sin límite superior de tamaño: soporta APKs grandes y modelos IA desde R2
     }
 
     private val localVersionCode: Int by lazy {
@@ -81,9 +79,8 @@ class UpdateChecker @Inject constructor(
     }
 
     /**
-     * Lee version.json con límite de tamaño para evitar OOM si R2 devuelve
-     * un payload inesperado. Usa channel en lugar de body() para no cargar
-     * bytes innecesarios en memoria.
+     * Lee version.json acotado a VERSION_JSON_MAX bytes.
+     * Usa channel para no materializar el body completo en heap.
      */
     private suspend fun parseVersionJson(response: HttpResponse): UpdateResult {
         val channel = response.bodyAsChannel()
@@ -95,9 +92,8 @@ class UpdateChecker @Inject constructor(
             val read = channel.readAvailable(buffer)
             if (read <= 0) break
             totalRead += read
-            if (totalRead > VERSION_JSON_MAX) {
+            if (totalRead > VERSION_JSON_MAX)
                 return UpdateResult.Error("version.json demasiado grande (>${VERSION_JSON_MAX}B)")
-            }
             builder.append(String(buffer, 0, read, Charsets.UTF_8))
         }
 
@@ -122,7 +118,8 @@ class UpdateChecker @Inject constructor(
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // DOWNLOAD — streaming real, sin cargar el APK en RAM
+    // DOWNLOAD — streaming puro, sin límite de tamaño, sin RAM acumulada
+    // Funciona para APKs, modelos IA y cualquier asset en R2.
     // ──────────────────────────────────────────────────────────────────────
 
     suspend fun downloadAndInstall(
@@ -130,7 +127,7 @@ class UpdateChecker @Inject constructor(
         onProgress: (Int) -> Unit = {}
     ): DownloadResult = withContext(Dispatchers.IO) {
 
-        // Sugerirle al GC que libere antes de iniciar descarga (crítico en 2 GB)
+        // Hint al GC antes de abrir el canal — importante en 2 GB RAM
         System.gc()
 
         val outputDir = context.getExternalFilesDir(null) ?: context.filesDir
@@ -151,7 +148,7 @@ class UpdateChecker @Inject constructor(
 
                 when {
                     status == 416 -> {
-                        // El servidor dice que ya tenemos todos los bytes
+                        // Servidor indica que ya tenemos todos los bytes
                         tmpFile.renameTo(apkFile)
                         onProgress(100)
                         return@withContext launchInstaller(apkFile)
@@ -166,19 +163,12 @@ class UpdateChecker @Inject constructor(
                 val totalBytes    = if (resumeFrom > 0 && contentLength > 0)
                     resumeFrom + contentLength else contentLength
 
-                // Validar tamaño anunciado antes de empezar a escribir
-                if (totalBytes > MAX_VALID_APK) {
-                    lastError = "APK demasiado grande: $totalBytes bytes"
-                    return@repeat
-                }
-
-                // Streaming real: ByteReadChannel → BufferedOutputStream → disco
-                // El chunk vive en stack; nunca el APK completo en heap.
-                val channel = response.bodyAsChannel()
-                val chunk   = ByteArray(CHUNK_SIZE)           // único buffer, reusado
+                // Streaming real: ByteReadChannel → BufferedOutputStream → disco.
+                // chunk es el único buffer en heap; el archivo nunca se acumula en RAM.
+                val channel    = response.bodyAsChannel()
+                val chunk      = ByteArray(CHUNK_SIZE)
                 var downloaded = resumeFrom
 
-                // Abrir en modo append para soportar resume
                 BufferedOutputStream(
                     FileOutputStream(tmpFile, /* append = */ resumeFrom > 0),
                     CHUNK_SIZE
@@ -186,19 +176,8 @@ class UpdateChecker @Inject constructor(
                     while (!channel.isClosedForRead) {
                         val read = channel.readAvailable(chunk)
                         if (read <= 0) break
-
-                        downloaded += read
-
-                        // Guardia: abortar si el tamaño real excede el máximo
-                        if (downloaded > MAX_VALID_APK) {
-                            lastError = "Descarga excede límite de seguridad ($MAX_VALID_APK B)"
-                            out.flush()
-                            tmpFile.delete()
-                            return@withContext DownloadResult.Error(lastError)
-                        }
-
                         out.write(chunk, 0, read)
-
+                        downloaded += read
                         if (totalBytes > 0)
                             onProgress(
                                 ((downloaded.toFloat() / totalBytes) * 100)
@@ -208,7 +187,7 @@ class UpdateChecker @Inject constructor(
                     out.flush()
                 }
 
-                if (tmpFile.length() < MIN_VALID_APK) {
+                if (tmpFile.length() < MIN_VALID_FILE) {
                     lastError = "Archivo demasiado pequeño (${tmpFile.length()} bytes)"
                     return@repeat
                 }

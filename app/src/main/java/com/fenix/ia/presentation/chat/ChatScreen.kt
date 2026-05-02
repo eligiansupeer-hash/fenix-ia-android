@@ -68,7 +68,6 @@ fun ChatScreen(
 
     LaunchedEffect(chatId) { viewModel.loadChat(chatId, projectId) }
 
-    // FASE 12 — scroll automático
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty())
             listState.animateScrollToItem(uiState.messages.size - 1)
@@ -101,8 +100,8 @@ fun ChatScreen(
     }
 
     Scaffold(
-        modifier      = Modifier.imePadding(),
-        snackbarHost  = { SnackbarHost(snackbarHostState) },
+        modifier     = Modifier.imePadding(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -176,9 +175,9 @@ fun ChatScreen(
             }
 
             LazyColumn(
-                state             = listState,
-                modifier          = Modifier.weight(1f),
-                contentPadding    = PaddingValues(8.dp),
+                state               = listState,
+                modifier            = Modifier.weight(1f),
+                contentPadding      = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (uiState.messages.isEmpty() && !uiState.isStreaming) {
@@ -196,8 +195,6 @@ fun ChatScreen(
                 items(uiState.messages, key = { it.id }) { message ->
                     val isLastAssistant = message.role == MessageRole.ASSISTANT &&
                         message.id == uiState.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id
-
-                    // FIX: para mensajes de usuario muestra "Reintentar" cuando no hay streaming
                     val showRetry = message.role == MessageRole.USER && !uiState.isStreaming
 
                     MessageBubble(
@@ -286,8 +283,8 @@ private fun DocumentContextPanel(documents: List<DocumentNode>, onToggle: (Strin
 @Composable
 private fun MessageBubble(
     message: Message,
-    showActions: Boolean = false,  // acciones del asistente (copiar, regenerar)
-    showRetry: Boolean = false,    // FIX: botón reintentar en mensajes del usuario
+    showActions: Boolean = false,
+    showRetry: Boolean = false,
     onRegenerate: () -> Unit = {},
     onRetry: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -296,10 +293,7 @@ private fun MessageBubble(
     val clipboardManager = LocalClipboardManager.current
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
-        ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
             Card(
                 modifier = Modifier.widthIn(max = 300.dp),
                 colors = CardDefaults.cardColors(
@@ -309,7 +303,7 @@ private fun MessageBubble(
             ) {
                 Column(Modifier.padding(12.dp)) {
                     Text(
-                        text = message.content,
+                        text  = message.content,
                         color = if (isUser) MaterialTheme.colorScheme.onPrimary
                                 else MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -326,29 +320,21 @@ private fun MessageBubble(
             }
         }
 
-        // FIX: botón "Reintentar" debajo del mensaje del USUARIO
         if (showRetry && isUser) {
-            Row(
-                Modifier.fillMaxWidth().padding(end = 4.dp, top = 2.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
+            Row(Modifier.fillMaxWidth().padding(end = 4.dp, top = 2.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(
-                    onClick            = onRetry,
-                    contentPadding     = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                    modifier           = Modifier.height(24.dp)
+                    onClick        = onRetry,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    modifier       = Modifier.height(24.dp)
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, Modifier.size(12.dp))
+                    Icon(Icons.Default.Refresh, null, Modifier.size(12.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text(
-                        "Reintentar",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                    )
+                    Text("Reintentar", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
                 }
             }
         }
 
-        // Acciones del ASISTENTE (copiar, regenerar)
         if (showActions && !isUser) {
             Row(Modifier.padding(start = 4.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 IconButton({ clipboardManager.setText(AnnotatedString(message.content)) }, Modifier.size(28.dp)) {
@@ -366,8 +352,7 @@ private fun MessageBubble(
 @Composable
 private fun StreamingIndicator(buffer: String, provider: ApiProvider?, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-        Card(
-            Modifier.widthIn(max = 300.dp),
+        Card(Modifier.widthIn(max = 300.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
             Column(Modifier.padding(12.dp)) {
@@ -383,12 +368,8 @@ private fun StreamingIndicator(buffer: String, provider: ApiProvider?, modifier:
 
 @Composable
 private fun DotsLoadingIndicator() {
-    val infiniteTransition = rememberInfiniteTransition(label = "dots")
-    val alpha by infiniteTransition.animateFloat(
-        0.3f, 1f,
-        infiniteRepeatable(tween(600), RepeatMode.Reverse),
-        label = "dots_alpha"
-    )
+    val transition = rememberInfiniteTransition(label = "dots")
+    val alpha by transition.animateFloat(0.3f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "dots_alpha")
     Text("● ● ●", color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha), style = MaterialTheme.typography.bodyMedium)
 }
 
@@ -396,7 +377,7 @@ private fun DotsLoadingIndicator() {
 @Composable
 private fun ChatInputBar(
     isStreaming: Boolean,
-    isSending: Boolean,   // FIX: guard anti-doble-envío
+    isSending: Boolean,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     onAttach: () -> Unit
@@ -406,7 +387,10 @@ private fun ChatInputBar(
 
     Surface(tonalElevation = 3.dp) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            // ↓ bottom = 24.dp sube la caja el equivalente a un emoji por encima de los botones virtuales
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 24.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onAttach, enabled = !busy, modifier = Modifier.size(40.dp)) {
@@ -414,11 +398,12 @@ private fun ChatInputBar(
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (busy) 0.3f else 0.7f))
             }
             OutlinedTextField(
-                value = input, onValueChange = { input = it },
-                placeholder = { Text("Escribe tu mensaje...") },
-                modifier = Modifier.weight(1f).testTag("chat_input"),
-                maxLines = 4,
-                enabled  = !busy
+                value         = input,
+                onValueChange = { input = it },
+                placeholder   = { Text("Escribe tu mensaje...") },
+                modifier      = Modifier.weight(1f).testTag("chat_input"),
+                maxLines      = 4,
+                enabled       = !busy
             )
             Spacer(Modifier.width(4.dp))
             if (isStreaming) {
@@ -427,7 +412,6 @@ private fun ChatInputBar(
                 IconButton(
                     onClick  = { if (input.isNotBlank()) { onSend(input.trim()); input = "" } },
                     modifier = Modifier.testTag("send_button"),
-                    // FIX: deshabilitado si isSending o input vacío
                     enabled  = input.isNotBlank() && !isSending
                 ) {
                     Icon(Icons.Default.Send, "Enviar")

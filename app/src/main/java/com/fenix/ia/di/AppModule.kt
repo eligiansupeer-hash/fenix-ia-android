@@ -21,14 +21,12 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.*
 import io.ktor.serialization.kotlinx.json.*
 import io.objectbox.BoxStore
+import okhttp3.CipherSuite
 import okhttp3.ConnectionSpec
 import okhttp3.TlsVersion
-import okhttp3.CipherSuite
 import javax.inject.Singleton
 
-/**
- * Migración v1 → v2: crea la tabla tools.
- */
+// ── Migración v1 → v2: crea tabla tools ──────────────────────────────────────
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(database: SupportSQLiteDatabase) {
         database.execSQL(
@@ -54,6 +52,45 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+// ── Migración v2 → v3: P4 chats nullable, P5 chat_tools, P6 attachmentUris ──
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        // P4: Recrear tabla chats con projectId nullable (eliminar FK estricta)
+        database.execSQL(
+            "CREATE TABLE IF NOT EXISTS `chats_new` " +
+            "(`id` TEXT NOT NULL, `projectId` TEXT, `title` TEXT NOT NULL, " +
+            "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+        )
+        database.execSQL(
+            "INSERT INTO `chats_new` (`id`, `projectId`, `title`, `createdAt`) " +
+            "SELECT `id`, `projectId`, `title`, `createdAt` FROM `chats`"
+        )
+        database.execSQL("DROP TABLE `chats`")
+        database.execSQL("ALTER TABLE `chats_new` RENAME TO `chats`")
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_chats_projectId` ON `chats` (`projectId`)"
+        )
+
+        // P5: Tabla N:M chat_tools
+        database.execSQL(
+            "CREATE TABLE IF NOT EXISTS `chat_tools` " +
+            "(`chatId` TEXT NOT NULL, `toolId` TEXT NOT NULL, `isEnabled` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`chatId`, `toolId`), " +
+            "FOREIGN KEY(`chatId`) REFERENCES `chats`(`id`) ON DELETE CASCADE, " +
+            "FOREIGN KEY(`toolId`) REFERENCES `tools`(`id`) ON DELETE CASCADE)"
+        )
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_chat_tools_chatId` ON `chat_tools` (`chatId`)"
+        )
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_chat_tools_toolId` ON `chat_tools` (`toolId`)"
+        )
+
+        // P6: Columna attachmentUris en messages
+        database.execSQL("ALTER TABLE `messages` ADD COLUMN `attachmentUris` TEXT")
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
@@ -66,8 +103,8 @@ object AppModule {
             FenixDatabase::class.java,
             "fenix_ia_db"
         )
-        .addMigrations(MIGRATION_1_2)
-        .build()
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .build()
     }
 
     @Provides fun provideProjectDao(db: FenixDatabase)  = db.projectDao()
@@ -75,6 +112,7 @@ object AppModule {
     @Provides fun provideMessageDao(db: FenixDatabase)  = db.messageDao()
     @Provides fun provideDocumentDao(db: FenixDatabase) = db.documentDao()
     @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()
+    @Provides fun provideChatToolDao(db: FenixDatabase) = db.chatToolDao() // P5
 
     // ── ObjectBox ─────────────────────────────────────────────────────────────
     @Provides
@@ -84,11 +122,10 @@ object AppModule {
         return ObjectBoxStore.store
     }
 
-    // ── Ktor HttpClient — OkHttp engine con TLS fingerprint Chrome (Fase 10) ──
+    // ── Ktor HttpClient — OkHttp + TLS fingerprint Chrome 120+ (Fase 10) ─────
     @Provides
     @Singleton
     fun provideKtorClient(): HttpClient {
-        // Perfil TLS equivalente a Chrome 120+ para evadir WAF/Cloudflare
         val tlsSpec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
             .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2)
             .cipherSuites(
@@ -117,9 +154,6 @@ object AppModule {
     }
 }
 
-/**
- * Binding EmbeddingModel → TFLiteEmbeddingModel.
- */
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class EmbeddingModule {

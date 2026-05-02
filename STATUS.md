@@ -17,143 +17,62 @@
 | 11 | Reducer estado streaming abortado | ✅ Completada — Sesión 2 |
 | 12 | Scroll automático Compose | ✅ Completada — Sesión 2 |
 | 13 | Auditoría final compilación | ✅ Completada — Sesión 3 |
-
-## 🏁 REFACTORÍA COMPLETA — MANUAL GEMINI APLICADO Y AUDITADO
+| 14 | **Loop agéntico tool calling** | ✅ **Completada — Sesión 7** |
 
 ---
 
-## Sesión 1 — 1 Mayo 2026
-### Fase 10 — COMPLETADA y CI OK (commit bba6278)
-- Import `cio.*` → `okhttp.*`, `HttpClient(CIO)` → `HttpClient(OkHttp)`
-- `ConnectionSpec` TLS 1.3/1.2 cipher suites Chrome 120+
-- Timeouts en plugin `HttpTimeout`
+## Sesión 7 — 2 Mayo 2026
 
-## Sesión 2 — 1 Mayo 2026
+### BUG CRÍTICO DETECTADO EN PRODUCCIÓN — Loop agéntico faltante
 
-### Auditoría fases 1–9
-Verificadas en repo: todas implementadas correctamente. Sin cambios necesarios.
+**Síntoma (capturas de usuario):**
+- El LLM genera correctamente las etiquetas `<tool_call>{"name":"summarize",...}</tool_call>`
+- Pero estas etiquetas se **muestran como texto crudo** en el bubble del asistente
+- Ninguna herramienta se ejecuta; el usuario nunca ve un resultado
 
-### Fase 11 — COMPLETADA (commit a1e28f3)
-**Fix:** `streamingBuffer = ""` en bloque `StreamEvent.Error` de `ChatViewModel.kt`.
+**Causa raíz:**
+`ChatViewModel.collectInferenceStream()` (sesiones anteriores) simplemente acumulaba el stream y
+al recibir `StreamEvent.Done` persistía el texto tal cual, sin pasar por `ToolCallParser`.
+`ToolExecutor` existía y estaba completo pero **nunca era inyectado ni llamado** desde el ViewModel.
 
-### Fase 12 — COMPLETADA (commits 80b1cfd, a1e28f3, 9f14a93)
-**Fix:** `ChatEffect.ScrollToBottom` eliminado. Scroll único vía `LaunchedEffect(messages.size)`.
+**Fix — commit ec2dcdc:**
+`ChatViewModel.kt` reescrito con:
 
-## Sesión 3 — 1 Mayo 2026
+1. **`ToolExecutor` inyectado** vía Hilt en el constructor
+2. **`runAgenticLoop()`** — bucle hasta `MAX_AGENTIC_ITERATIONS = 5`:
+   - Llama al LLM con `collectStreamToString()` y acumula output completo
+   - Verifica `ToolCallParser.hasToolCall(output)`
+   - Si **no hay tool calls** → persiste como mensaje final y sale
+   - Si **hay tool calls** → extrae con `ToolCallParser.extractAll()`, ejecuta cada una vía
+     `ToolExecutor.execute()`, inyecta resultados como mensaje "user" en el historial, itera
+3. **`collectStreamToString()`** — nuevo helper que:
+   - Actualiza `streamingBuffer` en tiempo real con `stripToolCalls(output)` (el usuario ve
+     el texto limpio mientras se genera, sin ver las etiquetas internas)
+   - Retorna el string completo con tool_calls intactas para que `runAgenticLoop` las procese
+   - Si ocurre `StreamEvent.Error` retorna `null` (error ya propagado al uiState)
+4. **Feedback visual** durante ejecución: el buffer muestra `"⚙️ Ejecutando N herramienta(s)..."`
+   mientras se procesan las tools entre iteraciones
 
-### Fase 13 — COMPLETADA (auditoría estructural)
-Verificados en repo:
-- `FenixDatabase.kt`: `DocumentEntity::class` presente en array `entities` ✅
-- `RepositoryModule.kt`: `@Binds bindDocumentRepository` presente ✅
-- `MainActivity.kt`: `@AndroidEntryPoint` presente, NavHost configurado ✅
-- `ChatContract.kt`: `ScrollToBottom` eliminado del sealed class `ChatEffect` ✅
-- Fases 11/12: implementadas correctamente en sesión anterior ✅
-- Todas las fases 1–12: verificadas presentes en el código fuente
+**Flujo resultante (correcto):**
+```
+Usuario: "¿qué tiene este documento?"
+→ LLM genera: <tool_call>{"name":"read_file","args":{"path":"..."}}</tool_call>
+→ ViewModel detecta tool call → NO muestra las etiquetas
+→ Ejecuta read_file → obtiene JSON con contenido
+→ Inyecta resultado en historial como mensaje "user"
+→ LLM genera respuesta final con el contenido real del documento
+→ Usuario ve: "El documento contiene: ..."
+```
 
-### CI Versionado Automático — COMPLETADO (commit 186eb71)
-**Problema:** `versionCode = 2` hardcodeado → todas las releases quedaban como `v2`.
+**Archivos modificados:**
+- `ChatViewModel.kt` — commit ec2dcdc
 
-**Solución implementada en `build-apk.yml`:**
-- Nuevo Job 1 `bump-version` (solo en push a main, antes de compilar)
-- Lee `versionCode` actual, incrementa +1, actualiza `versionName` → `"1.0.{versionCode}"`
-- Commit con `[skip ci]`. Resultado: cada push genera `v3`, `v4`, `v5`... secuencialmente.
+**Nota para próxima sesión:**
+Si el CI falla por el nuevo constructor de `ChatViewModel` (Hilt necesita que `ToolExecutor`
+esté en el grafo de DI), verificar que `ToolExecutor` tenga `@Singleton` y `@Inject constructor`
+— ya lo tiene desde sesiones anteriores. No debería requerir cambios en módulos de Hilt.
 
-## Sesión 4 — 2 Mayo 2026
+---
 
-### Fix de compilación previo a sesión
-**Problema:** `MessageRepositoryImpl.kt` compilaba con error porque `MessageEntity` (con `attachmentUris: String?` agregada en sesión anterior) no estaba reflejada en el modelo de dominio `Message` ni en los mappers.
-**Fix (2 commits):**
-- `Message.kt`: agrega `val attachmentUris: List<String> = emptyList()`
-- `MessageRepositoryImpl.kt`: mappers actualizados — CSV ↔ List<String>
-
-### P4 — Chats Generales — COMPLETADA
-- `GeneralChatListScreen.kt` — CREADA: pantalla reactiva con FAB para crear, lista vacía ilustrada
-- `FenixNavHost.kt` — ACTUALIZADO: rutas `GENERAL_CHATS_LIST` y `CHAT_GENERAL` + helper `chatGeneral()`; `ProjectListScreen` recibe `onNavigateToGeneralChats`
-
-### P5 — Herramientas por Chat — COMPLETADA
-- `ChatToolSelectorSheet.kt` — CREADA: `ModalBottomSheet` con `Switch` por tool; badge en TopBar cuenta tools activas
-- `ChatContract.kt` — ACTUALIZADO: `ToggleTool`, `AddAttachmentUri`, `ClearPendingAttachments` en `ChatIntent`; `allTools`, `enabledToolIds`, `pendingAttachmentUris` en `ChatUiState`
-- `ChatViewModel.kt` — ACTUALIZADO: inyecta `ToolRepository`, carga tools al `loadChat()`, implementa `toggleTool()`, pasa tools al `llmRouter.streamCompletion(tools = activeTools)`
-
-### P6 — Adjuntos de Archivos — COMPLETADA
-- `ChatViewModel.kt`: `sendMessage()` combina `pendingAttachmentUris` + adjuntos explícitos; guarda `attachmentUris` en `Message`; limpia pendientes tras envío; salta carga de documentos si `projectId` vacío (chat general)
-- `ChatScreen.kt` — ACTUALIZADO: `rememberLauncherForActivityResult(OpenMultipleDocuments)` para file picker; `PendingAttachmentsBar` visible cuando hay adjuntos; botón 📎 en `ChatInputBar`; indicador de adjuntos en `MessageBubble`; botón 🔧 de tools con badge
-
-### S7 — Tests de Verificación — PARCIAL (ToolCallingPipelineTest)
-- `ToolCallingPipelineTest.kt` — CREADO: 12 tests unitarios puros (sin Android/Hilt)
-
-## Sesión 5 — 2 Mayo 2026
-
-### Fix compilación CI — COMPLETADO (commit 10209e3) ✅ CI VERDE
-**Error:** `FenixNavHost.kt:53:17 No parameter with name 'onNavigateToGeneralChats' found.`
-**Fix:** `ProjectListScreen.kt` actualizado con parámetro `onNavigateToGeneralChats: () -> Unit` + `IconButton` Chat en TopAppBar.
-
-### S7 — Tests restantes — COMPLETADOS
-
-#### GeminiApiClientTest.kt — CREADO (commit 8ebe868)
-**Cubre P2:** 10 tests unitarios puros que verifican URI dinámica, v1beta, alt=sse, diferenciación por proveedor, schemas OpenAPI.
-
-#### LocalModelDownloadTest.kt — CREADO (commit 4decd9e)
-**Cubre P1:** 10 tests unitarios puros que verifican INFINITE_TIMEOUT_MS, umbral archivo, RAM, archivo temporal.
-
-## Sesión 6 — 2 Mayo 2026
-
-### Auditoría integral contra Manual Gemini (2 Abril 2026) — COMPLETADA
-
-**Todos los archivos del manual verificados en repo:**
-
-| Sección Manual | Archivo | Resultado Auditoría |
-|----------------|---------|---------------------|
-| S1 | LlmInferenceRouter.kt | ✅ Endpoint dinámico P2 + functionDeclarations/tools P3 |
-| S2 | LocalLlmEngine.kt | ✅ INFINITE_TIMEOUT_MS P1 correcto |
-| S2 | AndroidManifest.xml | ✅ FileProvider + permisos P1/P6 |
-| S2 | AppModule.kt | ✅ MIGRATION_2_3 completa (P4/P5/P6) |
-| S3 | Tool.kt | ✅ permissions: List<String>, executionType: ToolExecutionType |
-| S3 | ToolCallParser.kt | ✅ parser dual XML + JSON |
-| S3 | ToolSeeder.kt | ✅ schemas OpenAPI estrictos |
-| S3 | ToolExecutor.kt | ✅ executeNative correcto |
-| S3 | AgentWorker.kt | ✅ projectId = "default_global" si vacío |
-| S4 | ChatEntity.kt | ✅ projectId: String? nullable |
-| S4 | ChatDao.kt | ✅ getGeneralChats() WHERE projectId IS NULL |
-| S4 | ChatRepositoryImpl.kt | ✅ getGeneralChats() implementado |
-| S4 | GetGeneralChatsUseCase.kt | ✅ operador invoke() |
-| S4 | CreateGeneralChatUseCase.kt | ✅ projectId = "" → mapper → NULL en BD |
-| S4 | FenixNavHost.kt | ✅ GENERAL_CHATS_LIST + CHAT_GENERAL + helpers |
-| S4 | GeneralChatListScreen.kt | ✅ FAB + lista reactiva + empty state |
-| S5 | ChatToolEntity.kt | ✅ tabla N:M con FKs y CASCADE |
-| S5 | ChatToolDao.kt | ✅ getEnabledToolIdsForChatFlow + insertOrUpdate |
-| S5 | ToolRepository.kt | ✅ getEnabledToolIdsForChat + setToolEnabledForChat |
-| S5 | ChatToolSelectorSheet.kt | ✅ ModalBottomSheet con Switch por tool |
-| S6 | MessageEntity.kt | ✅ attachmentUris: String? |
-| S6 | MessageRepositoryImpl.kt | ✅ mappers CSV ↔ List<String> |
-| S6 | file_provider_paths.xml | ✅ external-files-path + cache-path |
-| S6 | ChatInputBar.kt (en ChatScreen) | ✅ rememberLauncherForActivityResult + filePicker |
-| S6 | ChatViewModel.kt | ✅ pendingAttachmentUris + activeTools + P4/P5/P6 |
-| S6 | ChatScreen.kt | ✅ tools sheet + file picker + adjuntos bar |
-| S7 | GeminiApiClientTest.kt | 🔧 BUG CORREGIDO (commit 39851b9) |
-| S7 | ToolCallingPipelineTest.kt | ✅ 12 tests OK |
-| S7 | LocalModelDownloadTest.kt | ✅ 10 tests OK |
-
-### Bug corregido — GeminiApiClientTest.kt (commit 39851b9)
-**Problema:** El test construía `Tool(permissions = "", executionType = "JS")` usando tipos de
-`ToolEntity` en lugar del dominio. `Tool.permissions` es `List<String>` y `Tool.executionType`
-es `ToolExecutionType` — el test no compilaría.
-**Fix:** 
-- `permissions = ""` → `permissions = listOf("WRITE_EXTERNAL_STORAGE")`
-- `executionType = "JS"` → `executionType = ToolExecutionType.NATIVE_KOTLIN`
-- El helper de router replicado como función local (no como clase anónima con router) para
-  evitar dependencias de construcción.
-
-### 🏁 ESTADO FINAL — MANUAL GEMINI 100% IMPLEMENTADO Y AUDITADO
-
-**Checklist Sección 9 del manual:**
-- [x] MIGRATION_2_3 en repo y compilando ✅
-- [x] LocalLlmEngine con INFINITE_TIMEOUT_MS ✅
-- [x] GeneralChatListScreen navegable desde ProjectListScreen ✅
-- [x] LlmInferenceRouter endpoint Gemini dinámico (no 404) ✅
-- [x] functionDeclarations (Gemini) y tools (OpenAI) en body JSON ✅
-- [x] ChatScreen con FilePicker y URIs de adjuntos ✅
-- [x] Tests S7 compilan y son unitarios puros ✅ (bug corregido sesión 6)
-
-**Próxima sesión:** No quedan tareas pendientes del manual. Si hay nuevas features o bugs
-de CI detectados por el runner, iniciar desde ahí.
+## Historial de sesiones anteriores (1–6)
+Ver commits: bba6278, a1e28f3, 80b1cfd, 9f14a93, 186eb71, 10209e3, 8ebe868, 4decd9e, 39851b9, aa5e50e

@@ -1,5 +1,8 @@
 package com.fenix.ia.presentation.chat
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -9,6 +12,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
@@ -23,7 +27,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.domain.model.DocumentNode
@@ -54,6 +57,16 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showDocPanel by remember { mutableStateOf(false) }
+    var showToolSheet by remember { mutableStateOf(false) }  // P5
+
+    // P6: lanzador para selección múltiple de archivos
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        uris.forEach { uri ->
+            viewModel.processIntent(ChatIntent.AddAttachmentUri(uri.toString()))
+        }
+    }
 
     LaunchedEffect(chatId) {
         viewModel.loadChat(chatId, projectId)
@@ -61,8 +74,6 @@ fun ChatScreen(
 
     /**
      * FASE 12 — Mecanismo único de scroll automático.
-     * Reactivo al tamaño de la lista de mensajes. Elimina la colisión con
-     * el efecto ScrollToBottom que fue removido del ViewModel.
      */
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
@@ -81,14 +92,27 @@ fun ChatScreen(
         }
     }
 
-    // FASE 12: colector de efectos sin caso ScrollToBottom (eliminado del sealed class)
     LaunchedEffect(Unit) {
         viewModel.effects.collectLatest { effect ->
             when (effect) {
                 is ChatEffect.ShowError      -> snackbarHostState.showSnackbar(effect.message)
-                is ChatEffect.OpenFilePicker -> { /* handled in ProjectDetail */ }
+                is ChatEffect.OpenFilePicker -> {
+                    filePickerLauncher.launch(
+                        effect.allowedMimeTypes.toTypedArray().ifEmpty { arrayOf("*/*") }
+                    )
+                }
             }
         }
+    }
+
+    // P5: BottomSheet de selección de herramientas
+    if (showToolSheet) {
+        ChatToolSelectorSheet(
+            allTools       = uiState.allTools,
+            enabledToolIds = uiState.enabledToolIds,
+            onToggle       = { toolId -> viewModel.processIntent(ChatIntent.ToggleTool(toolId)) },
+            onDismiss      = { showToolSheet = false }
+        )
     }
 
     Scaffold(
@@ -114,14 +138,28 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // P5: botón de herramientas
                     BadgedBox(
                         badge = {
-                            val checkedCount = uiState.documents.count { it.isChecked }
-                            if (checkedCount > 0) Badge { Text("$checkedCount") }
+                            val count = uiState.enabledToolIds.size
+                            if (count > 0) Badge { Text("$count") }
                         }
                     ) {
-                        IconButton(onClick = { showDocPanel = !showDocPanel }) {
-                            Icon(Icons.Default.AttachFile, contentDescription = "Documentos de contexto")
+                        IconButton(onClick = { showToolSheet = true }) {
+                            Icon(Icons.Default.Build, contentDescription = "Herramientas activas")
+                        }
+                    }
+                    // Botón documentos de contexto (solo si hay proyecto)
+                    if (projectId.isNotBlank()) {
+                        BadgedBox(
+                            badge = {
+                                val checkedCount = uiState.documents.count { it.isChecked }
+                                if (checkedCount > 0) Badge { Text("$checkedCount") }
+                            }
+                        ) {
+                            IconButton(onClick = { showDocPanel = !showDocPanel }) {
+                                Icon(Icons.Default.AttachFile, contentDescription = "Documentos de contexto")
+                            }
                         }
                     }
                 }
@@ -130,14 +168,28 @@ fun ChatScreen(
         bottomBar = {
             Column {
                 ProviderSelector(
-                    providers  = uiState.availableProviders,
-                    selected   = uiState.selectedProvider,
-                    onSelect   = { viewModel.processIntent(ChatIntent.SelectProvider(it)) }
+                    providers = uiState.availableProviders,
+                    selected  = uiState.selectedProvider,
+                    onSelect  = { viewModel.processIntent(ChatIntent.SelectProvider(it)) }
                 )
+                // P6: indicador de adjuntos pendientes
+                if (uiState.pendingAttachmentUris.isNotEmpty()) {
+                    PendingAttachmentsBar(
+                        uris     = uiState.pendingAttachmentUris,
+                        onClear  = { viewModel.processIntent(ChatIntent.ClearPendingAttachments) }
+                    )
+                }
                 ChatInputBar(
-                    isStreaming = uiState.isStreaming,
-                    onSend     = { content -> viewModel.processIntent(ChatIntent.SendMessage(content)) },
-                    onStop     = { viewModel.processIntent(ChatIntent.StopStreaming) }
+                    isStreaming  = uiState.isStreaming,
+                    onSend       = { content ->
+                        viewModel.processIntent(ChatIntent.SendMessage(content))
+                    },
+                    onStop       = { viewModel.processIntent(ChatIntent.StopStreaming) },
+                    onAttach     = {  // P6: abre file picker con tipos comunes
+                        filePickerLauncher.launch(
+                            arrayOf("application/pdf", "image/*", "text/plain")
+                        )
+                    }
                 )
             }
         }
@@ -147,10 +199,10 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (showDocPanel) {
+            if (showDocPanel && projectId.isNotBlank()) {
                 DocumentContextPanel(
                     documents = uiState.documents,
-                    onToggle = { docId ->
+                    onToggle  = { docId ->
                         viewModel.processIntent(ChatIntent.ToggleDocumentCheckpoint(docId))
                     }
                 )
@@ -180,14 +232,16 @@ fun ChatScreen(
 
                 items(uiState.messages, key = { it.id }) { message ->
                     val isLastAssistant = message.role == MessageRole.ASSISTANT &&
-                        message.id == uiState.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id
+                        message.id == uiState.messages
+                            .lastOrNull { it.role == MessageRole.ASSISTANT }?.id
 
                     MessageBubble(
-                        message = message,
-                        showActions = isLastAssistant && !uiState.isStreaming,
+                        message      = message,
+                        showActions  = isLastAssistant && !uiState.isStreaming,
                         onRegenerate = { viewModel.processIntent(ChatIntent.RegenerateLastMessage) },
-                        modifier = Modifier.testTag(
-                            if (message.role == MessageRole.ASSISTANT) "assistant_message" else "user_message"
+                        modifier     = Modifier.testTag(
+                            if (message.role == MessageRole.ASSISTANT) "assistant_message"
+                            else "user_message"
                         )
                     )
                 }
@@ -195,12 +249,44 @@ fun ChatScreen(
                 if (uiState.isStreaming) {
                     item {
                         StreamingIndicator(
-                            buffer = uiState.streamingBuffer,
+                            buffer   = uiState.streamingBuffer,
                             provider = uiState.activeProvider,
                             modifier = Modifier.testTag("streaming_indicator")
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+// ── P6: Barra de adjuntos pendientes ─────────────────────────────────────────
+@Composable
+private fun PendingAttachmentsBar(
+    uris: List<String>,
+    onClear: () -> Unit
+) {
+    Surface(tonalElevation = 2.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.AttachFile,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "${uris.size} archivo(s) adjunto(s)",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onClear, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text("Limpiar", style = MaterialTheme.typography.labelSmall)
             }
         }
     }
@@ -215,7 +301,6 @@ private fun ProviderSelector(
     onSelect: (ApiProvider?) -> Unit
 ) {
     if (providers.isEmpty()) return
-
     LazyRow(
         modifier = Modifier
             .fillMaxWidth()
@@ -233,9 +318,7 @@ private fun ProviderSelector(
             FilterChip(
                 selected    = selected == provider,
                 onClick     = { onSelect(provider) },
-                label       = {
-                    Text(provider.displayName, style = MaterialTheme.typography.labelSmall)
-                },
+                label       = { Text(provider.displayName, style = MaterialTheme.typography.labelSmall) },
                 leadingIcon = if (provider == ApiProvider.LOCAL_ON_DEVICE) {
                     { Icon(Icons.Default.PhoneAndroid, null, modifier = Modifier.size(14.dp)) }
                 } else null
@@ -315,12 +398,25 @@ private fun MessageBubble(
                         MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
-                Text(
-                    text = message.content,
-                    modifier = Modifier.padding(12.dp),
-                    color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = message.content,
+                        color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    // P6: muestra indicador si el mensaje tiene adjuntos
+                    if (message.attachmentUris.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "📎 ${message.attachmentUris.size} adjunto(s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isUser)
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                }
             }
         }
 
@@ -330,7 +426,7 @@ private fun MessageBubble(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 IconButton(
-                    onClick = { clipboardManager.setText(AnnotatedString(message.content)) },
+                    onClick  = { clipboardManager.setText(AnnotatedString(message.content)) },
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
@@ -341,7 +437,7 @@ private fun MessageBubble(
                     )
                 }
                 IconButton(
-                    onClick = onRegenerate,
+                    onClick  = onRegenerate,
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
@@ -368,7 +464,9 @@ private fun StreamingIndicator(
     ) {
         Card(
             modifier = Modifier.widthIn(max = 300.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 provider?.let {
@@ -404,11 +502,13 @@ private fun DotsLoadingIndicator() {
     )
 }
 
+// P6: ChatInputBar actualizado con botón de adjuntos
 @Composable
 private fun ChatInputBar(
     isStreaming: Boolean,
     onSend: (String) -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onAttach: () -> Unit  // P6
 ) {
     var input by remember { mutableStateOf("") }
     Surface(tonalElevation = 3.dp) {
@@ -418,6 +518,19 @@ private fun ChatInputBar(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // P6: botón de adjuntar archivo
+            IconButton(
+                onClick  = onAttach,
+                enabled  = !isStreaming,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(
+                    Icons.Default.AttachFile,
+                    contentDescription = "Adjuntar archivo",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.3f else 0.7f)
+                )
+            }
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
@@ -427,7 +540,7 @@ private fun ChatInputBar(
                     .testTag("chat_input"),
                 maxLines = 4
             )
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             if (isStreaming) {
                 IconButton(onClick = onStop) {
                     Icon(Icons.Default.Stop, contentDescription = "Detener")

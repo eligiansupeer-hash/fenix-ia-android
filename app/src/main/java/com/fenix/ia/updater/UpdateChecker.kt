@@ -17,8 +17,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.BufferedOutputStream
 import java.io.File
-import java.io.RandomAccessFile
+import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -30,13 +31,16 @@ class UpdateChecker @Inject constructor(
     @Named("download") private val downloadClient: HttpClient
 ) {
     companion object {
-        private const val TAG = "UpdateChecker"
+        private const val TAG              = "UpdateChecker"
         private const val R2_BASE_URL      = "https://pub-40411760a9364f69b3cbc6c7a7cbd359.r2.dev"
         private const val VERSION_JSON_URL = "$R2_BASE_URL/version.json"
         private const val APK_FILENAME     = "fenix-ia-update.apk"
         private const val TMP_FILENAME     = "fenix-ia-update.apk.tmp"
         private const val MAX_RETRIES      = 3
-        private const val MIN_VALID_APK    = 1_000_000L
+        private const val MIN_VALID_APK    = 1_000_000L          // 1 MB
+        private const val MAX_VALID_APK    = 100_000_000L        // 100 MB — límite de seguridad
+        private const val VERSION_JSON_MAX = 8_192L              // 8 KB — version.json nunca debe ser mayor
+        private const val CHUNK_SIZE       = 32 * 1024           // 32 KB — chunk conservador para 2 GB RAM
     }
 
     private val localVersionCode: Int by lazy {
@@ -56,6 +60,10 @@ class UpdateChecker @Inject constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // CHECK
+    // ──────────────────────────────────────────────────────────────────────
+
     suspend fun checkForUpdate(): UpdateResult {
         return try {
             val response = apiClient.get(VERSION_JSON_URL) {
@@ -72,16 +80,38 @@ class UpdateChecker @Inject constructor(
         }
     }
 
+    /**
+     * Lee version.json con límite de tamaño para evitar OOM si R2 devuelve
+     * un payload inesperado. Usa channel en lugar de body() para no cargar
+     * bytes innecesarios en memoria.
+     */
     private suspend fun parseVersionJson(response: HttpResponse): UpdateResult {
+        val channel = response.bodyAsChannel()
+        val builder = StringBuilder()
+        val buffer  = ByteArray(1024)
+        var totalRead = 0L
+
+        while (!channel.isClosedForRead) {
+            val read = channel.readAvailable(buffer)
+            if (read <= 0) break
+            totalRead += read
+            if (totalRead > VERSION_JSON_MAX) {
+                return UpdateResult.Error("version.json demasiado grande (>${VERSION_JSON_MAX}B)")
+            }
+            builder.append(String(buffer, 0, read, Charsets.UTF_8))
+        }
+
         val meta = try {
-            json.decodeFromString<R2VersionMeta>(response.body())
+            json.decodeFromString<R2VersionMeta>(builder.toString())
         } catch (e: Exception) {
             return UpdateResult.Error("version.json inválido: ${e.message}")
         }
+
         if (meta.versionCode <= localVersionCode)
             return UpdateResult.UpToDate(localVersionCode, meta.versionCode)
         if (meta.apkUrl.isBlank())
             return UpdateResult.Error("version.json sin apkUrl")
+
         return UpdateResult.UpdateAvailable(
             currentVersion = localVersionCode,
             newVersion     = meta.versionCode,
@@ -91,10 +121,18 @@ class UpdateChecker @Inject constructor(
         )
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // DOWNLOAD — streaming real, sin cargar el APK en RAM
+    // ──────────────────────────────────────────────────────────────────────
+
     suspend fun downloadAndInstall(
         apkUrl: String,
         onProgress: (Int) -> Unit = {}
     ): DownloadResult = withContext(Dispatchers.IO) {
+
+        // Sugerirle al GC que libere antes de iniciar descarga (crítico en 2 GB)
+        System.gc()
+
         val outputDir = context.getExternalFilesDir(null) ?: context.filesDir
         outputDir.mkdirs()
         val tmpFile = File(outputDir, TMP_FILENAME)
@@ -103,14 +141,17 @@ class UpdateChecker @Inject constructor(
 
         repeat(MAX_RETRIES) { attempt ->
             val resumeFrom = if (tmpFile.exists()) tmpFile.length() else 0L
+
             try {
                 val response = downloadClient.get(apkUrl) {
                     header("User-Agent", "FenixIA-Android/$localVersionName")
                     if (resumeFrom > 0) header(HttpHeaders.Range, "bytes=$resumeFrom-")
                 }
                 val status = response.status.value
+
                 when {
                     status == 416 -> {
+                        // El servidor dice que ya tenemos todos los bytes
                         tmpFile.renameTo(apkFile)
                         onProgress(100)
                         return@withContext launchInstaller(apkFile)
@@ -120,42 +161,83 @@ class UpdateChecker @Inject constructor(
                         return@repeat
                     }
                 }
+
                 val contentLength = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
-                val totalBytes = if (resumeFrom > 0 && contentLength > 0) resumeFrom + contentLength else contentLength
-                val channel = response.bodyAsChannel()
-                RandomAccessFile(tmpFile, "rw").use { raf ->
-                    raf.seek(resumeFrom)
-                    val buffer = ByteArray(64 * 1024)
-                    var downloaded = resumeFrom
-                    while (!channel.isClosedForRead) {
-                        val read = channel.readAvailable(buffer)
-                        if (read > 0) {
-                            raf.write(buffer, 0, read)
-                            downloaded += read
-                            if (totalBytes > 0)
-                                onProgress(((downloaded.toFloat() / totalBytes) * 100).toInt().coerceIn(0, 99))
-                        }
-                    }
+                val totalBytes    = if (resumeFrom > 0 && contentLength > 0)
+                    resumeFrom + contentLength else contentLength
+
+                // Validar tamaño anunciado antes de empezar a escribir
+                if (totalBytes > MAX_VALID_APK) {
+                    lastError = "APK demasiado grande: $totalBytes bytes"
+                    return@repeat
                 }
+
+                // Streaming real: ByteReadChannel → BufferedOutputStream → disco
+                // El chunk vive en stack; nunca el APK completo en heap.
+                val channel = response.bodyAsChannel()
+                val chunk   = ByteArray(CHUNK_SIZE)           // único buffer, reusado
+                var downloaded = resumeFrom
+
+                // Abrir en modo append para soportar resume
+                BufferedOutputStream(
+                    FileOutputStream(tmpFile, /* append = */ resumeFrom > 0),
+                    CHUNK_SIZE
+                ).use { out ->
+                    while (!channel.isClosedForRead) {
+                        val read = channel.readAvailable(chunk)
+                        if (read <= 0) break
+
+                        downloaded += read
+
+                        // Guardia: abortar si el tamaño real excede el máximo
+                        if (downloaded > MAX_VALID_APK) {
+                            lastError = "Descarga excede límite de seguridad ($MAX_VALID_APK B)"
+                            out.flush()
+                            tmpFile.delete()
+                            return@withContext DownloadResult.Error(lastError)
+                        }
+
+                        out.write(chunk, 0, read)
+
+                        if (totalBytes > 0)
+                            onProgress(
+                                ((downloaded.toFloat() / totalBytes) * 100)
+                                    .toInt().coerceIn(0, 99)
+                            )
+                    }
+                    out.flush()
+                }
+
                 if (tmpFile.length() < MIN_VALID_APK) {
                     lastError = "Archivo demasiado pequeño (${tmpFile.length()} bytes)"
                     return@repeat
                 }
+
                 tmpFile.renameTo(apkFile)
                 onProgress(100)
                 return@withContext launchInstaller(apkFile)
+
             } catch (e: Exception) {
+                Log.e(TAG, "Intento ${attempt + 1} fallido: ${e.message}")
                 lastError = e.message ?: "Excepción desconocida"
-                if (attempt < MAX_RETRIES - 1) kotlinx.coroutines.delay(2_000L * (attempt + 1))
+                if (attempt < MAX_RETRIES - 1)
+                    kotlinx.coroutines.delay(2_000L * (attempt + 1))
             }
         }
+
         DownloadResult.Error("Descarga fallida tras $MAX_RETRIES intentos: $lastError")
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // INSTALLER
+    // ──────────────────────────────────────────────────────────────────────
 
     private fun launchInstaller(apkFile: File): DownloadResult {
         return try {
             if (!apkFile.exists()) return DownloadResult.Error("APK no encontrado")
-            val apkUri = FileProvider.getUriForFile(context, "${context.packageName}.provider", apkFile)
+            val apkUri = FileProvider.getUriForFile(
+                context, "${context.packageName}.provider", apkFile
+            )
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(apkUri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -168,13 +250,17 @@ class UpdateChecker @Inject constructor(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Data classes / sealed classes
+// ──────────────────────────────────────────────────────────────────────────
+
 @Serializable
 private data class R2VersionMeta(
     val versionCode: Int,
     val versionName: String,
     val apkUrl: String,
     val notes: String = "",
-    val sha: String = ""
+    val sha: String   = ""
 )
 
 sealed class UpdateResult {

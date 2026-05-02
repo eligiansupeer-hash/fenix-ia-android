@@ -79,22 +79,54 @@ Verificados en repo:
 - `ChatViewModel.kt`: `sendMessage()` combina `pendingAttachmentUris` + adjuntos explícitos; guarda `attachmentUris` en `Message`; limpia pendientes tras envío; salta carga de documentos si `projectId` vacío (chat general)
 - `ChatScreen.kt` — ACTUALIZADO: `rememberLauncherForActivityResult(OpenMultipleDocuments)` para file picker; `PendingAttachmentsBar` visible cuando hay adjuntos; botón 📎 en `ChatInputBar`; indicador de adjuntos en `MessageBubble`; botón 🔧 de tools con badge
 
-### S7 — Tests de Verificación — COMPLETADA
-- `ToolCallingPipelineTest.kt` — CREADO: 12 tests unitarios puros (sin Android/Hilt) que verifican detección de tool calls en formato inyectado `<tool_call>` y formato nativo OpenAI `delta.tool_calls[0].function`
+### S7 — Tests de Verificación — PARCIAL (ToolCallingPipelineTest)
+- `ToolCallingPipelineTest.kt` — CREADO: 12 tests unitarios puros (sin Android/Hilt)
 
 ## Sesión 5 — 2 Mayo 2026
 
-### Fix compilación CI — COMPLETADO (commit 10209e3)
+### Fix compilación CI — COMPLETADO (commit 10209e3) ✅ CI VERDE
 **Error:** `FenixNavHost.kt:53:17 No parameter with name 'onNavigateToGeneralChats' found.`
+**Fix:** `ProjectListScreen.kt` actualizado con parámetro `onNavigateToGeneralChats: () -> Unit` + `IconButton` Chat en TopAppBar.
 
-**Causa raíz:** En sesión 4 se actualizó `FenixNavHost.kt` para pasar `onNavigateToGeneralChats` a `ProjectListScreen`, pero la firma de `ProjectListScreen` no fue actualizada en ese mismo commit.
+### S7 — Tests restantes — COMPLETADOS
 
-**Fix aplicado en `ProjectListScreen.kt`:**
-- Agregado parámetro `onNavigateToGeneralChats: () -> Unit` en la firma del `@Composable`
-- Agregado `IconButton` en la `TopAppBar` con `Icons.Default.Chat` que invoca `onNavigateToGeneralChats`
-- Import `Icons.filled.Chat` añadido
+#### GeminiApiClientTest.kt — CREADO (commit 8ebe868)
+**Cubre P2:** 10 tests unitarios puros que verifican:
+- URI dinámica con modelo variable (no hardcodeado)
+- Presencia de `v1beta` y `alt=sse` en endpoint Gemini
+- Diferenciación de endpoints por proveedor (Groq, Mistral, LOCAL)
+- Serialización de `inputSchema` OpenAPI: `type`, `properties`, `required`
+- Compatibilidad multi-propiedad y schema vacío
 
-**Verificación:** Ningún otro sitio llama a `ProjectListScreen` (solo `FenixNavHost.kt`). Tests unitarios no referencian esta screen.
+#### LocalModelDownloadTest.kt — CREADO (commit 4decd9e)
+**Cubre P1:** 10 tests unitarios puros que verifican:
+- `DOWNLOAD_TIMEOUT_MS == HttpTimeout.INFINITE_TIMEOUT_MS`
+- Timeout infinito supera el global de 120s (AppModule)
+- Prueba matemática: 1.5 GB a 1 MB/s → 1536s > 120s → timeout global es insuficiente
+- Umbral `MIN_VALID_FILE_BYTES >= 1 MB` para validar archivo post-descarga
+- Nombres y estructura de archivo/directorio correctos
+- `MIN_RAM_MB = 3500` excluye Samsung A10 (2 GB) e incluye dispositivos de 4 GB
+- Archivo temporal `.tmp` distinto al final; eliminado si la descarga falla
 
-### Estado CI
-- ⏳ Esperando confirmación del Action tras commit 10209e3
+### 🏁 MANUAL DE EJECUCIÓN — COMPLETADO AL 100%
+
+**Auditoría final contra Sección 0 del manual:**
+
+| Fase Manual | Archivo | Estado |
+|-------------|---------|--------|
+| S1 | LlmInferenceRouter.kt | ✅ Endpoint dinámico P2 + Tool Calling P3 |
+| S2 | LocalLlmEngine.kt | ✅ INFINITE_TIMEOUT_MS P1 |
+| S2 | AndroidManifest.xml | ✅ FileProvider + permisos P1/P6 |
+| S2 | AppModule.kt | ✅ MIGRATION_2_3 P4/P5/P6 |
+| S3-S6 | Tool.kt, ChatEntity, DAOs, Screens | ✅ Verificado en sesiones anteriores |
+| S7 | GeminiApiClientTest.kt | ✅ Creado sesión 5 |
+| S7 | ToolCallingPipelineTest.kt | ✅ Creado sesión 4 |
+| S7 | LocalModelDownloadTest.kt | ✅ Creado sesión 5 |
+
+**Checklist Sección 9 del manual:**
+- [x] MIGRATION_2_3 en repo y compilando ✅
+- [x] LocalLlmEngine con INFINITE_TIMEOUT_MS ✅
+- [x] GeneralChatListScreen navegable desde ProjectListScreen ✅
+- [x] LlmInferenceRouter endpoint Gemini dinámico (no 404) ✅
+- [x] functionDeclarations (Gemini) y tools (OpenAI) en body JSON ✅
+- [x] ChatScreen con FilePicker y URIs de adjuntos ✅

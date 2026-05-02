@@ -27,12 +27,19 @@ class MessageRepositoryImpl @Inject constructor(
     private fun MessageEntity.toDomain() = Message(
         id = id, chatId = chatId,
         role = MessageRole.valueOf(role),
-        content = content, timestamp = timestamp
+        content = content, timestamp = timestamp,
+        attachmentUris = attachmentUris
+            ?.split(",")
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
     )
 
     private fun Message.toEntity() = MessageEntity(
         id = id, chatId = chatId,
         role = role.name,
-        content = content, timestamp = timestamp
+        content = content, timestamp = timestamp,
+        attachmentUris = attachmentUris
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(",")
     )
 }

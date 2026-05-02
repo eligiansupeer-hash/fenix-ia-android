@@ -1,12 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Rutas autorizadas para FileProvider.
-    P1: fenix_downloads → OTA updates (UpdateChecker.downloadAndInstall)
-    P6: fenix_documents → archivos adjuntos seleccionados por el usuario en ChatInputBar
-        fenix_cache     → archivos temporales de cámara/captura
+    Rutas autorizadas para FileProvider (${applicationId}.provider).
+
+    FIX F2: Se agrega <files-path name="fenix_models"> para cubrir el directorio interno
+    donde LocalLlmEngine almacena el modelo Gemma (~1.5 GB en context.filesDir/fenix_models).
+    Sin esta entrada, FileProvider lanzaba IllegalArgumentException al intentar
+    compartir el APK o archivos desde el filesDir interno.
+
+    FIX F2: Se cambia external-files-path path="Download/" a path="." (raíz)
+    para que el FileProvider cubra cualquier subdirectorio que DownloadManager
+    pueda usar según la versión de Android y el fabricante del dispositivo.
+
+    Entradas:
+    - fenix_models    → context.filesDir/fenix_models (modelo IA local)
+    - fenix_internal  → context.filesDir (documentos generados por tools: DOCX, PDF)
+    - fenix_downloads → getExternalFilesDir(DOWNLOADS) raíz (APK OTA)
+    - fenix_documents → getExternalFilesDir(DOCUMENTS) raíz (adjuntos chat P6)
+    - fenix_cache     → cacheDir (archivos temporales / cámara)
 -->
 <paths>
-    <external-files-path name="fenix_downloads" path="Download/" />
-    <external-files-path name="fenix_documents" path="Documents/" />
-    <cache-path         name="fenix_cache"      path="." />
+    <!-- Almacenamiento interno: modelos IA y documentos generados -->
+    <files-path name="fenix_models"   path="fenix_models/" />
+    <files-path name="fenix_internal" path="." />
+
+    <!-- Almacenamiento externo de la app: OTA y documentos del usuario -->
+    <external-files-path name="fenix_downloads" path="." />
+    <external-files-path name="fenix_documents" path="." />
+
+    <!-- Cache: temporales, cámara -->
+    <cache-path name="fenix_cache" path="." />
 </paths>

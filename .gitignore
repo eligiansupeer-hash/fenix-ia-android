@@ -8,3 +8,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Nunca excluir el wrapper jar — requerido por Gradle, Codex y CI
+!gradle/wrapper/gradle-wrapper.jar

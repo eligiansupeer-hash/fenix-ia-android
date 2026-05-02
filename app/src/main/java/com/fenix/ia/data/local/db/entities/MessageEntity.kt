@@ -20,5 +20,6 @@ data class MessageEntity(
     val chatId: String,
     val role: String,   // "USER" | "ASSISTANT" | "SYSTEM"
     val content: String,
+    val attachmentUris: String?, // P6: URIs separadas por coma, null si sin adjuntos
     val timestamp: Long
 )

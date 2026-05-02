@@ -2,7 +2,6 @@ package com.fenix.ia.updater
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -25,23 +24,24 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Verifica e instala actualizaciones OTA desde GitHub Releases.
+ * OTA via Cloudflare R2.
  *
- * PROBLEMA RAÍZ (porcentajes aleatorios de corte):
- *   browser_download_url de GitHub Releases genera URLs presignadas con TTL ~60s.
- *   DownloadManager reusa la misma URL en retries internos — cuando el token expiró,
- *   GitHub cierra la conexión en un punto aleatorio del stream.
- *   El porcentaje varía porque depende de cuándo exactamente expiró el token vs
- *   el progreso de descarga en ese momento.
+ * PROBLEMA RAÍZ DE DESCARGAS CORTADAS (porcentajes aleatorios):
+ *   GitHub Releases usa URLs presignadas en objects.githubusercontent.com con TTL ~60s.
+ *   Cuando OkHttp sigue el redirect 302 de browser_download_url hacia la URL presignada,
+ *   el token expira a mitad de la descarga y GitHub cierra el stream en un punto aleatorio.
+ *   En reintentos: OkHttp sigue el redirect PERO no reenvía el header Range al destino,
+ *   provocando descarga desde byte 0 con escritura incorrecta sobre el tmpFile parcial.
  *
- * SOLUCIÓN:
- *   1. Reemplazar DownloadManager por descarga directa con Ktor @Named("download").
- *   2. Soporte de Range resume: si el tmpFile ya existe, continúa desde el byte
- *      donde quedó usando "Range: bytes=N-". En cada reintento obtiene una nueva URL
- *      presignada válida y retoma sin desperdiciar lo descargado.
- *   3. checkForUpdate() siempre obtiene la URL más reciente del release (nueva sesión
- *      = nuevo token presignado válido) antes de reanudar la descarga.
- *   4. 3 reintentos automáticos con backoff de 2s entre intentos.
+ * SOLUCIÓN — Cloudflare R2:
+ *   - APK alojado en R2: URL pública permanente, sin tokens, sin TTL.
+ *   - version.json en R2: metadata de versión sin autenticación.
+ *   - R2 soporta Range requests nativamente → resume funciona sin interferencia de redirects.
+ *   - Sin rate limits agresivos como GitHub API (60 req/hora sin token).
+ *
+ * FLUJO:
+ *   checkForUpdate()   → GET $R2_BASE_URL/version.json (JSON liviano, sin auth)
+ *   downloadAndInstall() → GET $R2_BASE_URL/fenix-ia-latest.apk con Range: bytes=N-
  */
 @Singleton
 class UpdateChecker @Inject constructor(
@@ -51,12 +51,17 @@ class UpdateChecker @Inject constructor(
 ) {
     companion object {
         private const val TAG = "UpdateChecker"
-        private const val RELEASES_API =
-            "https://api.github.com/repos/eligiansupeer-hash/fenix-ia-android/releases/latest"
-        private const val APK_FILENAME  = "fenix-ia-update.apk"
-        private const val TMP_FILENAME  = "fenix-ia-update.apk.tmp"
-        private const val MAX_RETRIES   = 3
-        private const val MIN_VALID_APK = 1_000_000L   // 1 MB mínimo
+
+        // URL pública del bucket R2 — sin trailing slash.
+        // Mismo valor que CF_R2_PUBLIC_URL en el workflow de CI.
+        // Formato: https://pub-<hash>.r2.dev  (o dominio custom si está configurado)
+        private const val R2_BASE_URL = "https://pub-fenix-ia-releases.r2.dev"
+
+        private const val VERSION_JSON_URL = "$R2_BASE_URL/version.json"
+        private const val APK_FILENAME     = "fenix-ia-update.apk"
+        private const val TMP_FILENAME     = "fenix-ia-update.apk.tmp"
+        private const val MAX_RETRIES      = 3
+        private const val MIN_VALID_APK    = 1_000_000L  // 1 MB mínimo
     }
 
     private val localVersionCode: Int by lazy {
@@ -78,59 +83,55 @@ class UpdateChecker @Inject constructor(
 
     // ── Verificación ──────────────────────────────────────────────────────────
 
+    /**
+     * Lee version.json desde R2. Liviano, sin autenticación, sin rate limits.
+     */
     suspend fun checkForUpdate(): UpdateResult {
         return try {
-            val response = apiClient.get(RELEASES_API) {
-                header("Accept", "application/vnd.github.v3+json")
+            val response = apiClient.get(VERSION_JSON_URL) {
                 header("User-Agent", "FenixIA-Android/$localVersionName")
+                header("Cache-Control", "no-cache")
             }
             when (response.status.value) {
-                200  -> parseReleaseResponse(response)
+                200  -> parseVersionJson(response)
                 404  -> UpdateResult.NoReleases
-                403  -> UpdateResult.Error("Rate limit de GitHub. Intentá más tarde.")
-                else -> UpdateResult.Error("GitHub API: ${response.status.value}")
+                else -> UpdateResult.Error("R2 respondió ${response.status.value}")
             }
         } catch (e: Exception) {
-            UpdateResult.Error("Error de red: ${e.message}")
+            UpdateResult.Error("Error de red al verificar versión: ${e.message}")
         }
     }
 
-    private suspend fun parseReleaseResponse(response: HttpResponse): UpdateResult {
-        val release = try {
-            json.decodeFromString<GithubRelease>(response.body())
+    private suspend fun parseVersionJson(response: HttpResponse): UpdateResult {
+        val meta = try {
+            json.decodeFromString<R2VersionMeta>(response.body())
         } catch (e: Exception) {
-            return UpdateResult.Error("Respuesta inválida de GitHub: ${e.message}")
+            return UpdateResult.Error("version.json inválido: ${e.message}")
         }
 
-        val remoteCode = release.tagName.removePrefix("v").toIntOrNull()
-            ?: return UpdateResult.Error("Tag inválido: '${release.tagName}'")
+        if (meta.versionCode <= localVersionCode)
+            return UpdateResult.UpToDate(localVersionCode, meta.versionCode)
 
-        if (remoteCode <= localVersionCode)
-            return UpdateResult.UpToDate(localVersionCode, remoteCode)
-
-        val apkAsset = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
-            ?: return UpdateResult.Error("El release no tiene APK adjunto.")
+        if (meta.apkUrl.isBlank())
+            return UpdateResult.Error("version.json no contiene apkUrl.")
 
         return UpdateResult.UpdateAvailable(
             currentVersion = localVersionCode,
-            newVersion     = remoteCode,
-            releaseNotes   = release.body.take(500),
-            apkUrl         = apkAsset.browserDownloadUrl,
-            apkSizeBytes   = apkAsset.size
+            newVersion     = meta.versionCode,
+            releaseNotes   = meta.notes.take(500),
+            apkUrl         = meta.apkUrl,
+            apkSizeBytes   = 0L  // R2 no incluye size en version.json; se obtiene del header
         )
     }
 
     // ── Descarga con resume y retry ───────────────────────────────────────────
 
     /**
-     * Descarga el APK usando Ktor con soporte Range resume.
+     * Descarga el APK desde Cloudflare R2 con soporte Range resume.
      *
-     * Cada vez que se llama a downloadAndInstall se obtiene una nueva apkUrl
-     * (desde UpdateResult.UpdateAvailable que viene de checkForUpdate() fresco).
-     * Eso garantiza un token presignado válido en cada intento.
-     *
-     * Si tmpFile ya tiene bytes parciales, envía "Range: bytes=N-" para retomar
-     * desde donde quedó sin re-descargar lo que ya está en disco.
+     * R2 soporta Range requests sin restricciones y la URL no tiene TTL,
+     * por lo que cada reintento retoma exactamente donde quedó sin necesidad
+     * de re-fetchear la URL ni de preocuparse por tokens expirados.
      *
      * onProgress recibe 0..100 (porcentaje entero).
      */
@@ -141,17 +142,16 @@ class UpdateChecker @Inject constructor(
 
         val outputDir = context.getExternalFilesDir(null) ?: context.filesDir
         outputDir.mkdirs()
-        val tmpFile  = File(outputDir, TMP_FILENAME)
-        val apkFile  = File(outputDir, APK_FILENAME)
+        val tmpFile = File(outputDir, TMP_FILENAME)
+        val apkFile = File(outputDir, APK_FILENAME)
 
         var lastError = "Error desconocido"
 
         repeat(MAX_RETRIES) { attempt ->
-            Log.d(TAG, "downloadAndInstall attempt ${attempt + 1}/$MAX_RETRIES, tmpSize=${tmpFile.length()}")
+            val resumeFrom = if (tmpFile.exists()) tmpFile.length() else 0L
+            Log.d(TAG, "Attempt ${attempt + 1}/$MAX_RETRIES resumeFrom=$resumeFrom url=$apkUrl")
 
             try {
-                val resumeFrom = if (tmpFile.exists()) tmpFile.length() else 0L
-
                 val response = downloadClient.get(apkUrl) {
                     header("User-Agent", "FenixIA-Android/$localVersionName")
                     if (resumeFrom > 0) {
@@ -161,25 +161,28 @@ class UpdateChecker @Inject constructor(
                 }
 
                 val status = response.status.value
-                // 200 = descarga completa desde el inicio, 206 = Partial Content (resume OK)
-                if (status != 200 && status != 206) {
-                    lastError = "HTTP $status al descargar APK"
-                    Log.e(TAG, lastError)
-                    if (status == 416) {
-                        // Range not satisfiable → el archivo ya está completo en disco
-                        tmpFile.delete()
+                when {
+                    status == 416 -> {
+                        // Range Not Satisfiable → archivo ya completo en disco
+                        Log.d(TAG, "416: file already complete, renaming")
+                        tmpFile.renameTo(apkFile)
+                        onProgress(100)
+                        return@withContext launchInstaller(apkFile)
                     }
-                    return@repeat
+                    status != 200 && status != 206 -> {
+                        lastError = "HTTP $status al descargar APK"
+                        Log.e(TAG, lastError)
+                        return@repeat
+                    }
                 }
 
-                val totalFromServer = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
-                val totalBytes = if (resumeFrom > 0 && totalFromServer > 0)
-                    resumeFrom + totalFromServer
+                val contentLength = response.headers[HttpHeaders.ContentLength]?.toLong() ?: -1L
+                val totalBytes = if (resumeFrom > 0 && contentLength > 0)
+                    resumeFrom + contentLength
                 else
-                    totalFromServer
+                    contentLength
 
                 val channel = response.bodyAsChannel()
-                // Append si resume, overwrite si descarga fresca
                 RandomAccessFile(tmpFile, "rw").use { raf ->
                     raf.seek(resumeFrom)
                     val buffer = ByteArray(64 * 1024)
@@ -190,21 +193,19 @@ class UpdateChecker @Inject constructor(
                             raf.write(buffer, 0, read)
                             downloaded += read
                             if (totalBytes > 0) {
-                                onProgress(((downloaded.toFloat() / totalBytes) * 100).toInt().coerceIn(0, 100))
+                                onProgress(((downloaded.toFloat() / totalBytes) * 100).toInt().coerceIn(0, 99))
                             }
                         }
                     }
-                    Log.d(TAG, "Stream finished: downloaded=$downloaded totalBytes=$totalBytes")
+                    Log.d(TAG, "Stream done: downloaded=$downloaded totalBytes=$totalBytes")
                 }
 
-                // Validar integridad mínima
                 if (tmpFile.length() < MIN_VALID_APK) {
-                    lastError = "Archivo descargado demasiado pequeño (${tmpFile.length()} bytes)"
+                    lastError = "Archivo demasiado pequeño (${tmpFile.length()} bytes)"
                     Log.e(TAG, lastError)
                     return@repeat
                 }
 
-                // Éxito — renombrar y lanzar instalador
                 tmpFile.renameTo(apkFile)
                 onProgress(100)
                 return@withContext launchInstaller(apkFile)
@@ -212,13 +213,13 @@ class UpdateChecker @Inject constructor(
             } catch (e: Exception) {
                 lastError = e.message ?: "Excepción desconocida"
                 Log.e(TAG, "Attempt ${attempt + 1} failed: $lastError", e)
+                // tmpFile NO se borra → permite resume en siguiente intento
                 if (attempt < MAX_RETRIES - 1) {
                     kotlinx.coroutines.delay(2_000L * (attempt + 1))
                 }
             }
         }
 
-        // Todos los reintentos fallaron — no borrar tmpFile para permitir resume futuro
         DownloadResult.Error("Descarga fallida tras $MAX_RETRIES intentos: $lastError")
     }
 
@@ -246,20 +247,15 @@ class UpdateChecker @Inject constructor(
     }
 }
 
-// ── DTOs GitHub API ───────────────────────────────────────────────────────────
+// ── DTO Cloudflare R2 version.json ────────────────────────────────────────────
 
 @Serializable
-private data class GithubRelease(
-    @SerialName("tag_name") val tagName: String,
-    val body: String = "",
-    val assets: List<GithubAsset> = emptyList()
-)
-
-@Serializable
-private data class GithubAsset(
-    val name: String,
-    @SerialName("browser_download_url") val browserDownloadUrl: String,
-    val size: Long
+private data class R2VersionMeta(
+    val versionCode: Int,
+    val versionName: String,
+    val apkUrl: String,
+    val notes: String = "",
+    val sha: String = ""
 )
 
 // ── Resultados ────────────────────────────────────────────────────────────────

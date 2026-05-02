@@ -46,3 +46,24 @@
 - CI_COMMAND_BUILD: ./gradlew assembleDebug
 - LINT_TOOLS: ktlint + detekt (cero advertencias estructurales para merge).
 - MAX_RETRY_ON_FAIL: 5 iteraciones. Superado el límite → HALT + notificación.
+
+## Setup de entorno de build (Codex / CI / Linux)
+Antes de ejecutar cualquier comando Gradle, el agente DEBE:
+
+```bash
+# 1. Asegurar que el jar del wrapper exista
+if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+  gradle wrapper --gradle-version 8.9
+fi
+
+# 2. Dar permisos de ejecución al script
+chmod +x ./gradlew
+
+# 3. Verificar que funciona
+./gradlew tasks --no-daemon
+```
+
+- Gradle version: 8.9
+- JDK requerido: 17 (temurin)
+- gradle-wrapper.jar: debe existir en gradle/wrapper/ — si falta, regenerar con `gradle wrapper`
+- PROHIBIDO llamar `gradle` directo en lugar de `./gradlew` salvo para regenerar el wrapper

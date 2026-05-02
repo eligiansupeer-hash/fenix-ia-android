@@ -10,4 +10,8 @@ interface ToolRepository {
     suspend fun updateTool(tool: Tool)
     suspend fun deleteTool(id: String)
     suspend fun getEnabledTools(): List<Tool>
+
+    // P5: Control granular de herramientas por sesión de chat
+    fun getEnabledToolIdsForChat(chatId: String): Flow<List<String>>
+    suspend fun setToolEnabledForChat(chatId: String, toolId: String, isEnabled: Boolean)
 }

@@ -1,6 +1,8 @@
 package com.fenix.ia.data.repository
 
+import com.fenix.ia.data.local.db.dao.ChatToolDao
 import com.fenix.ia.data.local.db.dao.ToolDao
+import com.fenix.ia.data.local.db.entities.ChatToolEntity
 import com.fenix.ia.data.local.db.entities.ToolEntity
 import com.fenix.ia.domain.model.Tool
 import com.fenix.ia.domain.model.ToolExecutionType
@@ -14,7 +16,8 @@ import javax.inject.Singleton
 
 @Singleton
 class ToolRepositoryImpl @Inject constructor(
-    private val dao: ToolDao
+    private val dao: ToolDao,
+    private val chatToolDao: ChatToolDao   // P5
 ) : ToolRepository {
 
     override fun getAllTools(): Flow<List<Tool>> =
@@ -35,7 +38,15 @@ class ToolRepositoryImpl @Inject constructor(
     override suspend fun getEnabledTools(): List<Tool> =
         dao.getEnabledTools().map { it.toDomain() }
 
-    // ---- mappers ----
+    // P5: Control granular de herramientas por chat ─────────────────────────
+    override fun getEnabledToolIdsForChat(chatId: String): Flow<List<String>> =
+        chatToolDao.getEnabledToolIdsForChatFlow(chatId)
+
+    override suspend fun setToolEnabledForChat(chatId: String, toolId: String, isEnabled: Boolean) {
+        chatToolDao.insertOrUpdate(ChatToolEntity(chatId, toolId, isEnabled))
+    }
+
+    // ── Mappers ─────────────────────────────────────────────────────────────
 
     private fun ToolEntity.toDomain() = Tool(
         id = id,

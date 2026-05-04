@@ -10,3 +10,12 @@
 local.properties
 # Nunca excluir el wrapper jar — requerido por Gradle, Codex y CI
 !gradle/wrapper/gradle-wrapper.jar
+
+# === Archivos de ruido local (no deben subirse) ===
+.kotlin/
+fenix_audit_xiaomi.jsonl
+fenix_compile_full.*.log
+fenix_compile_full.err.log
+fenix_compile_full.out.log
+fenix_compile_probe.*
+fenix_deep_research_exports/

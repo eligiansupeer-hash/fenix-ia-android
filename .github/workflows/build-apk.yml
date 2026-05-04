@@ -2,10 +2,13 @@ name: CI — Build, Test y Release OTA
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main", "refactoria-mayo-2026" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main", "refactoria-mayo-2026" ]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
 
@@ -59,8 +62,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -84,7 +85,7 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Compilar
-        run: ./gradlew compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
+        run: ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace 2>&1 | tee /tmp/compile.log
 
       - name: Verificar API keys hardcodeadas
         if: success()
@@ -112,8 +113,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -155,8 +154,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -178,21 +175,21 @@ jobs:
       - name: Permisos gradlew
         run: chmod +x ./gradlew
 
-      - name: Build APK
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Build APK release
+        run: ./gradlew :app:assembleRelease --no-daemon
 
       - name: Subir APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-for-release
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 1
 
       - name: Backup APK 14d
         uses: actions/upload-artifact@v4
         with:
           name: "fenix-ia-debug-${{ github.sha }}"
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 14
 
   release-r2:
@@ -221,8 +218,11 @@ jobs:
           name: apk-for-release
           path: ./apk-output/
 
-      - name: Renombrar APK
-        run: mv ./apk-output/app-debug.apk ./apk-output/fenix-ia-latest.apk
+      - name: Renombrar APK y calcular SHA-256 real
+        id: apk_hash
+        run: |
+          mv ./apk-output/app-release.apk ./apk-output/fenix-ia-latest.apk
+          echo "sha256=$(sha256sum ./apk-output/fenix-ia-latest.apk | awk '{print $1}')" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4

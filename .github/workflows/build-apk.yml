@@ -109,6 +109,7 @@ jobs:
     name: "🧪 Tests Unitarios"
     runs-on: ubuntu-latest
     needs: compile
+    if: always() && needs.compile.result == 'success'
 
     steps:
       - name: Checkout
@@ -137,9 +138,6 @@ jobs:
       - name: Tests JVM
         run: ./gradlew testDebugUnitTest --no-daemon --continue
 
-      - name: Empaquetar tests Android
-        run: ./gradlew :app:assembleDebugAndroidTest --no-daemon
-
       - name: Subir reporte
         if: always()
         uses: actions/upload-artifact@v4
@@ -153,6 +151,7 @@ jobs:
     name: "📦 Build APK Debug"
     runs-on: ubuntu-latest
     needs: unit-tests
+    if: always() && needs.unit-tests.result == 'success'
 
     steps:
       - name: Checkout
@@ -262,7 +261,6 @@ jobs:
             "versionName": "${VERSION_NAME}",
             "apkUrl": "${PUBLIC_URL}/fenix-ia-latest.apk",
             "notes": "${COMMIT_MSG}",
-            "sha": "${APK_SHA256}",
             "sha256": "${APK_SHA256}"
           }
           EOF

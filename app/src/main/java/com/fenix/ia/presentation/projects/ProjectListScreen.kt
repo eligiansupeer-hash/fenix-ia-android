@@ -7,6 +7,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fenix.ia.domain.model.Project
@@ -25,6 +27,8 @@ fun ProjectListScreen(
     onNavigateToProject: (projectId: String) -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToGeneralChats: () -> Unit,
+    onOpenMenu: (() -> Unit)? = null,
+    openCreateDialogOnStart: Boolean = false,
     viewModel: ProjectViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -38,11 +42,21 @@ fun ProjectListScreen(
             }
         }
     }
+    LaunchedEffect(openCreateDialogOnStart) {
+        if (openCreateDialogOnStart) showCreateDialog = true
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("FENIX IA — Proyectos") },
+                navigationIcon = {
+                    if (onOpenMenu != null) {
+                        IconButton(onClick = onOpenMenu) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                    }
+                },
                 actions = {
                     IconButton(
                         onClick = onNavigateToGeneralChats,
@@ -52,7 +66,7 @@ fun ProjectListScreen(
                     }
                     IconButton(
                         onClick = onNavigateToSettings,
-                        modifier = Modifier.semantics { contentDescription = "Configuración" }
+                        modifier = Modifier.semantics { contentDescription = "Configuracion" }
                     ) {
                         Icon(Icons.Default.Settings, contentDescription = null)
                     }
@@ -156,14 +170,14 @@ private fun CreateProjectDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Nombre del proyecto") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("project_name_field"),
                     singleLine = true
                 )
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
                     label = { Text("System Prompt (opcional)") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("project_system_prompt"),
                     minLines = 3,
                     maxLines = 5
                 )
@@ -173,7 +187,7 @@ private fun CreateProjectDialog(
             TextButton(
                 onClick = { if (name.isNotBlank()) onCreate(name, prompt) },
                 enabled = name.isNotBlank()
-            ) { Text("Crear") }
+            ) { Text("Guardar") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancelar") }

@@ -32,5 +32,7 @@ data class DocumentEntity(
     val semanticSummary: String = "",
     val isIndexed: Boolean = false,
     val isChecked: Boolean = false,
+    val status: String = "pending",
+    val errorMessage: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )

@@ -9,6 +9,7 @@ import androidx.work.*
 import com.fenix.ia.data.local.db.dao.DocumentDao
 import com.fenix.ia.data.local.db.entities.DocumentEntity
 import com.fenix.ia.data.local.objectbox.RagEngine
+import com.fenix.ia.data.local.objectbox.RagProjectId
 import com.fenix.ia.domain.model.DocumentNode
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -67,6 +68,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
                 ?: return@withContext Result.failure(
                     workDataOf("error" to "Documento no encontrado: $documentId")
                 )
+            documentDao.markAsProcessing(documentId)
 
             val document = entity.toDomain()
             val mime = entity.mimeType.lowercase()
@@ -97,7 +99,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
 
                 else -> {
                     Log.w(TAG, "Tipo MIME no soportado: $mime para '${document.name}'")
-                    documentDao.markAsIndexed(documentId)
+                    documentDao.markAsNoText(documentId, "Tipo no soportado: $mime")
                     return@withContext Result.success(
                         workDataOf("info" to "Tipo no soportado: $mime")
                     )
@@ -106,18 +108,18 @@ class DocumentIngestionWorker @AssistedInject constructor(
 
             if (rawText.isBlank()) {
                 Log.w(TAG, "'${document.name}': sin texto extraíble, marcando indexado")
-                documentDao.markAsIndexed(documentId)
+                documentDao.markAsNoText(documentId)
                 return@withContext Result.success(workDataOf("info" to "Sin texto extraíble"))
             }
 
             Log.d(TAG, "'${document.name}': indexando ${rawText.length} chars en ObjectBox")
             ragEngine.indexDocument(projectId = projectId, documentNodeId = documentId, text = rawText)
-            documentDao.markAsIndexed(documentId)
+            documentDao.markAsIndexed(documentId, "Indexado: ${rawText.length} caracteres")
 
         }.onFailure { e ->
             Log.e(TAG, "Ingesta fallida para $documentId (intento ${runAttemptCount + 1})", e)
             if (runAttemptCount >= MAX_ATTEMPTS - 1) {
-                runCatching { documentDao.markAsIndexed(documentId) }
+                runCatching { documentDao.markAsFailed(documentId, e.message ?: "Error desconocido") }
                 return@withContext Result.failure(workDataOf("error" to (e.message ?: "Error desconocido")))
             }
             return@withContext Result.retry()
@@ -277,7 +279,7 @@ class DocumentIngestionWorker @AssistedInject constructor(
         private const val MAX_ATTEMPTS         = 3
 
         fun deriveProjectIdLong(projectId: String): Long =
-            Math.abs(projectId.hashCode().toLong())
+            RagProjectId.stableLong(projectId)
 
         /**
          * Construye el WorkRequest individual.

@@ -1,0 +1,64 @@
+{
+  "_note1": "KEEP THIS FILE! Check it into a version control system (VCS) like git.",
+  "_note2": "ObjectBox manages crucial IDs for your object model. See docs for details.",
+  "_note3": "If you have VCS merge conflicts, you must resolve them according to ObjectBox docs.",
+  "entities": [
+    {
+      "id": "1:6427108388460635738",
+      "lastPropertyId": "7:961264693599237266",
+      "name": "DocumentChunk",
+      "properties": [
+        {
+          "id": "1:5297794112996877816",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:2260436385352657786",
+          "name": "projectId",
+          "type": 6
+        },
+        {
+          "id": "3:2824348415963253350",
+          "name": "documentNodeId",
+          "type": 9
+        },
+        {
+          "id": "4:739794981509344821",
+          "name": "textPayload",
+          "type": 9
+        },
+        {
+          "id": "5:3185923492658798936",
+          "name": "chunkIndex",
+          "type": 5
+        },
+        {
+          "id": "6:6180191391017989050",
+          "name": "tokenCount",
+          "type": 5
+        },
+        {
+          "id": "7:961264693599237266",
+          "name": "embeddingVector",
+          "indexId": "1:6975014129399679666",
+          "type": 28,
+          "flags": 8
+        }
+      ],
+      "relations": []
+    }
+  ],
+  "lastEntityId": "1:6427108388460635738",
+  "lastIndexId": "1:6975014129399679666",
+  "lastRelationId": "0:0",
+  "lastSequenceId": "0:0",
+  "modelVersion": 5,
+  "modelVersionParserMinimum": 5,
+  "retiredEntityUids": [],
+  "retiredIndexUids": [],
+  "retiredPropertyUids": [],
+  "retiredRelationUids": [],
+  "version": 1
+}

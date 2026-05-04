@@ -3,7 +3,7 @@
     Rutas autorizadas para FileProvider (${applicationId}.provider).
 
     FIX F2: Se agrega <files-path name="fenix_models"> para cubrir el directorio interno
-    donde LocalLlmEngine almacena el modelo Gemma (~1.5 GB en context.filesDir/fenix_models).
+    donde LocalLlmEngine almacena el modelo local (~271 MB en context.filesDir/fenix_models).
     Sin esta entrada, FileProvider lanzaba IllegalArgumentException al intentar
     compartir el APK o archivos desde el filesDir interno.
 

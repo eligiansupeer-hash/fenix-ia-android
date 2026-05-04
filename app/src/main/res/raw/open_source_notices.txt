@@ -1,0 +1,13 @@
+FENIX IA - Open Source Notices
+
+This application includes open source libraries distributed under permissive
+licenses such as Apache License 2.0, MIT, BSD-style licenses, and compatible
+open source terms.
+
+Main technology families used by the app include AndroidX, Jetpack Compose,
+Kotlin/Kotlinx, Hilt/Dagger, Ktor/OkHttp, Room, WorkManager, ObjectBox runtime,
+MediaPipe tasks, ML Kit, PDF/DOCX processing helpers, and testing libraries.
+
+This screen is a practical notice bundle for direct APK distribution from the
+FENIX IA website. Before public production release, regenerate this notice from
+the final dependency graph and include any required upstream license text.

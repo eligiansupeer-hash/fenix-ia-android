@@ -24,10 +24,25 @@ android {
             arg("room.incremental", "true")
         }
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     buildTypes {
+        debug {
+            buildConfigField("String", "AUDIT_MODE", "\"FULL_TEST\"")
+            buildConfigField("String", "EXPECTED_APK_CERT_SHA256", "\"DEBUG_TRUST_CURRENT\"")
+        }
+        create("qa") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("debug")
+            buildConfigField("String", "AUDIT_MODE", "\"FULL_TEST\"")
+            buildConfigField("String", "EXPECTED_APK_CERT_SHA256", "\"DEBUG_TRUST_CURRENT\"")
+        }
         release {
             isMinifyEnabled = true
+            buildConfigField("String", "AUDIT_MODE", "\"SAFE_PRODUCTION\"")
+            buildConfigField("String", "EXPECTED_APK_CERT_SHA256", "\"\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -137,4 +152,7 @@ dependencies {
     testImplementation(libs.turbine)
     androidTestImplementation(composeBom)
     androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }

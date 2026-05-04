@@ -34,7 +34,7 @@ object ToolCallParser {
     /**
      * Retorna verdadero si el texto contiene al menos un tool call.
      */
-    fun hasToolCall(text: String): Boolean = OPEN_TAG in text
+    fun hasToolCall(text: String): Boolean = OPEN_TAG in text || parseBareFunctionCall(text) != null
 
     /**
      * Extrae todos los tool calls del texto en orden de aparición.
@@ -55,6 +55,7 @@ object ToolCallParser {
             parseToolCall(rawJson)?.let { calls.add(it) }
         }
 
+        if (calls.isEmpty()) parseBareFunctionCall(text)?.let { calls.add(it) }
         return calls
     }
 
@@ -77,6 +78,21 @@ object ToolCallParser {
             ToolCall(name = name, argsJson = args)
         } catch (e: Exception) {
             null   // JSON malformado — ignorar silenciosamente
+        }
+    }
+
+    private fun parseBareFunctionCall(text: String): ToolCall? {
+        return try {
+            val root = Json.parseToJsonElement(text.trim()).jsonObject
+            val type = root["type"]?.jsonPrimitive?.contentOrNull
+            val name = root["name"]?.jsonPrimitive?.contentOrNull ?: return null
+            val args = root["args"]?.jsonObject
+                ?: root["parameters"]?.jsonObject
+                ?: return null
+            if (type != null && type != "function") return null
+            ToolCall(name = name, argsJson = args.toString())
+        } catch (e: Exception) {
+            null
         }
     }
 }

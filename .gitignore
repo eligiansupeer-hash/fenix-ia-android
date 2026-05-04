@@ -20,3 +20,4 @@ fenix_compile_full.err.log
 fenix_compile_full.out.log
 fenix_compile_probe.*
 fenix_deep_research_exports/
+app/build/ 

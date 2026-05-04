@@ -13,6 +13,9 @@ interface ChatDao {
     @Query("SELECT * FROM chats WHERE projectId IS NULL ORDER BY createdAt DESC")
     fun getGeneralChats(): Flow<List<ChatEntity>>
 
+    @Query("SELECT * FROM chats ORDER BY createdAt DESC LIMIT :limit")
+    fun getRecentChats(limit: Int): Flow<List<ChatEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChat(chat: ChatEntity)
 

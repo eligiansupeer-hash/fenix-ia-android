@@ -87,6 +87,42 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE `documents` ADD COLUMN `status` TEXT NOT NULL DEFAULT 'pending'")
+        database.execSQL("ALTER TABLE `documents` ADD COLUMN `errorMessage` TEXT NOT NULL DEFAULT ''")
+        database.execSQL("UPDATE `documents` SET `status` = CASE WHEN `isIndexed` = 1 THEN 'indexed' ELSE 'pending' END")
+    }
+}
+
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `message_attachments` (
+                `id` TEXT NOT NULL,
+                `messageId` TEXT NOT NULL,
+                `chatId` TEXT NOT NULL,
+                `projectId` TEXT NOT NULL,
+                `documentId` TEXT NOT NULL,
+                `mimeType` TEXT NOT NULL,
+                `status` TEXT NOT NULL,
+                `checksum` TEXT NOT NULL,
+                `sourceUri` TEXT NOT NULL,
+                `privateUri` TEXT NOT NULL,
+                `createdAt` INTEGER NOT NULL,
+                PRIMARY KEY(`id`),
+                FOREIGN KEY(`messageId`) REFERENCES `messages`(`id`) ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_message_attachments_messageId` ON `message_attachments` (`messageId`)")
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_message_attachments_chatId` ON `message_attachments` (`chatId`)")
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_message_attachments_projectId` ON `message_attachments` (`projectId`)")
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_message_attachments_documentId` ON `message_attachments` (`documentId`)")
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
@@ -95,7 +131,7 @@ object AppModule {
     @Singleton
     fun provideRoomDatabase(@ApplicationContext context: Context): FenixDatabase {
         return Room.databaseBuilder(context, FenixDatabase::class.java, "fenix_ia_db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
     }
 
@@ -105,6 +141,7 @@ object AppModule {
     @Provides fun provideDocumentDao(db: FenixDatabase) = db.documentDao()
     @Provides fun provideToolDao(db: FenixDatabase)     = db.toolDao()
     @Provides fun provideChatToolDao(db: FenixDatabase) = db.chatToolDao()
+    @Provides fun provideMessageAttachmentDao(db: FenixDatabase) = db.messageAttachmentDao()
 
     @Provides
     @Singleton
@@ -140,7 +177,7 @@ object AppModule {
             }
             engine {
                 config {
-                    connectionSpecs(listOf(tlsSpec, ConnectionSpec.CLEARTEXT))
+                    connectionSpecs(listOf(tlsSpec))
                 }
             }
         }
@@ -155,9 +192,9 @@ object AppModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .writeTimeout(0, TimeUnit.MILLISECONDS)
-            .followRedirects(true)          // FIX: storage.googleapis.com redirige con 302
+            .followRedirects(true)          // Requerido para descargas alojadas detras de redirects
             .followSslRedirects(true)       // FIX: cubre también HTTP→HTTPS redirects
-            .connectionSpecs(listOf(tlsSpec, ConnectionSpec.CLEARTEXT))
+            .connectionSpecs(listOf(tlsSpec))
             .build()
 
         return HttpClient(OkHttp) {

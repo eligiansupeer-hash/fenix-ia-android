@@ -2,6 +2,7 @@ package com.fenix.ia.orchestrator
 
 import android.util.Log
 import com.fenix.ia.data.local.objectbox.RagEngine
+import com.fenix.ia.data.local.objectbox.RagProjectId
 import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
 import com.fenix.ia.data.remote.StreamEvent
@@ -116,7 +117,7 @@ class OrchestratorEngine @Inject constructor(
             val allowedTools = enabledTools.filter { it.name in step.role.allowedTools }
 
             val ragCtx = try {
-                ragEngine.search(step.instruction, projectId.hashCode().toLong(), 5)
+                ragEngine.search(step.instruction, RagProjectId.stableLong(projectId), 5)
                     .joinToString("\n---\n") { it.textPayload }
             } catch (e: Exception) { "" }
 
@@ -160,7 +161,7 @@ class OrchestratorEngine @Inject constructor(
             if (finalOutput.isNotBlank()) {
                 try {
                     ragEngine.indexDocument(
-                        projectId      = projectId.hashCode().toLong(),
+                        projectId      = RagProjectId.stableLong(projectId),
                         documentNodeId = "workflow_step_${step.stepIndex}_${System.currentTimeMillis()}",
                         text           = finalOutput
                     )

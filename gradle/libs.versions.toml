@@ -8,18 +8,20 @@ room = "2.6.1"
 datastore = "1.1.1"
 ktor = "2.3.12"
 workmanager = "2.9.1"
-javascriptengine = "1.0.0-beta01"
+javascriptengine = "1.0.0"
 objectbox = "4.0.3"
 tensorflowLite = "2.16.1"
 junit5 = "5.11.3"
 junit4 = "4.13.2"
+androidxTest = "1.6.1"
+androidxTestExtJunit = "1.2.1"
 mockk = "1.13.13"
 apachePoi = "5.3.0"
 commonsCompress = "1.27.1"
 pdfboxAndroid = "2.0.27.0"
 mlkitTextRecognition = "16.0.0"
 ksoup = "0.1.5"
-mediapipe = "0.10.14"
+mediapipe = "0.10.21"
 
 [libraries]
 # Compose
@@ -84,6 +86,9 @@ junit-vintage-engine = { group = "org.junit.vintage", name = "junit-vintage-engi
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 turbine = { group = "app.cash.turbine", name = "turbine", version = "1.2.0" }
 compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTest" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTest" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agpVersion" }

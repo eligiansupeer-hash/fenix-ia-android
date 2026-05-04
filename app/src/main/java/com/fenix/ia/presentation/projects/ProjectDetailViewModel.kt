@@ -10,13 +10,17 @@ import com.fenix.ia.domain.model.Chat
 import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.repository.ChatRepository
 import com.fenix.ia.domain.repository.DocumentRepository
+import com.fenix.ia.data.local.objectbox.RagProjectId
 import com.fenix.ia.domain.repository.ProjectRepository
 import com.fenix.ia.ingestion.DocumentIngestionWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 
@@ -104,14 +108,16 @@ class ProjectDetailViewModel @Inject constructor(
             _uiState.update { it.copy(isIngesting = true) }
 
             try {
+                withContext(Dispatchers.IO) {
                 val (fileName, mimeType) = resolveUriMetadata(uri)
 
                 val docId = UUID.randomUUID().toString()
+                val localUri = copyUriToPrivateStorage(uri, projectId, docId, fileName)
                 val doc = DocumentNode(
                     id = docId,
                     projectId = projectId,
                     name = fileName,
-                    uri = uri.toString(),
+                    uri = localUri.toString(),
                     mimeType = mimeType,
                     sizeBytes = resolveUriSize(uri),
                     semanticSummary = "Procesando...",
@@ -134,6 +140,7 @@ class ProjectDetailViewModel @Inject constructor(
                     ExistingWorkPolicy.APPEND_OR_REPLACE,
                     request
                 )
+                }
 
             } catch (e: Exception) {
                 _effects.send(ProjectDetailEffect.ShowError("Error cargando documento: ${e.message}"))
@@ -191,9 +198,20 @@ class ProjectDetailViewModel @Inject constructor(
         } ?: 0L
     }
 
+    private fun copyUriToPrivateStorage(uri: Uri, projectId: String, documentId: String, fileName: String): Uri {
+        val safeProjectId = projectId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
+        val safeFileName = fileName.replace('\\', '/').substringAfterLast('/').replace(Regex("[^A-Za-z0-9._-]"), "_").take(120)
+        val targetDir = File(context.filesDir, "uploaded_documents/$safeProjectId").also { it.mkdirs() }
+        val target = File(targetDir, "${documentId}_$safeFileName")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("No se pudo abrir el documento")
+        return Uri.fromFile(target)
+    }
+
     companion object {
         fun deriveProjectIdLong(projectId: String): Long {
-            return Math.abs(projectId.hashCode().toLong())
+            return RagProjectId.stableLong(projectId)
         }
     }
 }

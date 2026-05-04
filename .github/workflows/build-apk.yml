@@ -137,6 +137,9 @@ jobs:
       - name: Tests JVM
         run: ./gradlew testDebugUnitTest --no-daemon --continue
 
+      - name: Empaquetar tests Android
+        run: ./gradlew :app:assembleDebugAndroidTest --no-daemon
+
       - name: Subir reporte
         if: always()
         uses: actions/upload-artifact@v4
@@ -250,9 +253,8 @@ jobs:
           VERSION_CODE="${{ steps.version.outputs.version_code }}"
           VERSION_NAME="${{ steps.version.outputs.version_name }}"
           PUBLIC_URL="${{ secrets.CF_R2_PUBLIC_URL }}"
-          SHORT_SHA="${{ github.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
           COMMIT_MSG=$(git log -1 --pretty=%B | head -3 | tr '\n' ' ')
+          APK_SHA256="${{ steps.apk_hash.outputs.sha256 }}"
 
           cat > version.json <<EOF
           {
@@ -260,7 +262,8 @@ jobs:
             "versionName": "${VERSION_NAME}",
             "apkUrl": "${PUBLIC_URL}/fenix-ia-latest.apk",
             "notes": "${COMMIT_MSG}",
-            "sha": "${SHORT_SHA}"
+            "sha": "${APK_SHA256}",
+            "sha256": "${APK_SHA256}"
           }
           EOF
 

@@ -1,7 +1,13 @@
 package com.fenix.ia.tools
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import com.fenix.ia.audit.AuditLogger
 import com.fenix.ia.data.local.objectbox.RagEngine
+import com.fenix.ia.data.local.objectbox.RagProjectId
+import com.fenix.ia.domain.model.DocumentNode
 import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
@@ -9,14 +15,28 @@ import com.fenix.ia.data.remote.StreamEvent
 import com.fenix.ia.domain.model.Tool
 import com.fenix.ia.domain.model.ToolExecutionType
 import com.fenix.ia.domain.repository.ToolRepository
+import com.fenix.ia.ingestion.DocxSimple
+import com.fenix.ia.ingestion.DocxTextExtractor
+import com.fenix.ia.ingestion.PdfTextExtractor
 import com.fenix.ia.research.WebResearcher
 import com.fenix.ia.sandbox.DynamicExecutionEngine
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.json.*
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * Dispatcher de ejecución de tools nativas.
@@ -41,16 +61,20 @@ class ToolExecutor @Inject constructor(
     private val sandbox: DynamicExecutionEngine,
     private val webResearcher: WebResearcher,
     private val llmRouter: LlmInferenceRouter,      // summarize, translate, deep_research
-    private val toolRepository: ToolRepository       // create_new_tool
+    private val toolRepository: ToolRepository,      // create_new_tool
+    private val pdfExtractor: PdfTextExtractor,
+    private val docxExtractor: DocxTextExtractor
 ) {
     suspend fun execute(tool: Tool, argsJson: String): ToolResult {
+        AuditLogger.action("tool_execute_start", mapOf("tool" to tool.name, "type" to tool.executionType.name))
+        val startedAt = System.currentTimeMillis()
         val args = try {
             Json.parseToJsonElement(argsJson).jsonObject
         } catch (e: Exception) {
             return ToolResult.Error("JSON de argumentos inválido: ${e.message}")
         }
 
-        return try {
+        val result = try {
             when (tool.executionType) {
                 ToolExecutionType.JAVASCRIPT    -> executeSandbox(tool, args)
                 ToolExecutionType.NATIVE_KOTLIN -> executeNative(tool, args)
@@ -61,6 +85,18 @@ class ToolExecutor @Inject constructor(
         } catch (e: Exception) {
             ToolResult.Error(e.message ?: "Error desconocido en ${tool.name}")
         }
+        val latencyMs = System.currentTimeMillis() - startedAt
+        when (result) {
+            is ToolResult.Success -> AuditLogger.action(
+                "tool_execute_success",
+                mapOf("tool" to tool.name, "latencyMs" to latencyMs.toString(), "chars" to result.outputJson.length.toString())
+            )
+            is ToolResult.Error -> AuditLogger.action(
+                "tool_execute_error",
+                mapOf("tool" to tool.name, "latencyMs" to latencyMs.toString(), "message" to result.message)
+            )
+        }
+        return result
     }
 
     // ── Dispatcher nativo ────────────────────────────────────────────────────
@@ -70,6 +106,7 @@ class ToolExecutor @Inject constructor(
             // Filesystem
             "read_file"        -> executeReadFile(args)
             "create_file"      -> executeCreateFile(args)
+            "edit_file"        -> executeEditFile(args)
             // RAG
             "store_knowledge"  -> executeStoreKnowledge(args)
             "retrieve_context" -> executeRetrieveContext(args)
@@ -83,7 +120,12 @@ class ToolExecutor @Inject constructor(
             "translate"        -> executeTranslate(args)
             // Documentos
             "create_docx"      -> executeCreateDocx(args)
+            "read_docx"        -> executeReadDocx(args)
+            "edit_docx"        -> executeEditDocx(args)
             "create_pdf"       -> executeCreatePdf(args)
+            "read_pdf"         -> executeReadPdf(args)
+            "ocr_pdf"          -> executeReadPdf(args)
+            "ocr_image"        -> executeOcrImage(args)
             // Sistema
             "create_new_tool"  -> executeCreateNewTool(args)
             else -> ToolResult.Error(
@@ -100,19 +142,7 @@ class ToolExecutor @Inject constructor(
             ?: return ToolResult.Error("Argumento 'path' requerido")
         val maxChars = args["maxChars"]?.jsonPrimitive?.intOrNull ?: 10_000
 
-        val file = File(path)
-        if (!file.exists()) return ToolResult.Error("Archivo no encontrado: $path")
-
-        val content = file.bufferedReader().use { reader ->
-            val buf  = CharArray(maxChars)
-            val read = reader.read(buf)
-            if (read > 0) String(buf, 0, read) else ""
-        }
-
-        return ToolResult.Success(buildJsonObject {
-            put("content",   content)
-            put("truncated", file.length() > maxChars)
-        }.toString())
+        return FileToolRunner.readFile(context, args)
     }
 
     private fun executeCreateFile(args: JsonObject): ToolResult {
@@ -123,14 +153,16 @@ class ToolExecutor @Inject constructor(
         val projectId = args["projectId"]?.jsonPrimitive?.content
             ?: return ToolResult.Error("Argumento 'projectId' requerido")
 
-        val dir  = File(context.filesDir, "projects/$projectId").also { it.mkdirs() }
-        val file = File(dir, fileName)
-        file.writeText(content)
+        return FileToolRunner.createFile(context, args)
+    }
 
-        return ToolResult.Success(buildJsonObject {
-            put("path",    file.absolutePath)
-            put("success", true)
-        }.toString())
+    private fun executeEditFile(args: JsonObject): ToolResult {
+        val path = args["path"]?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'path' requerido")
+        val content = args["content"]?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'content' requerido")
+
+        return FileToolRunner.editFile(context, args)
     }
 
     // ── RAG ──────────────────────────────────────────────────────────────────
@@ -144,7 +176,7 @@ class ToolExecutor @Inject constructor(
 
         val estimatedChunks = (text.split("\\s+".toRegex()).size / 700).coerceAtLeast(1)
         ragEngine.indexDocument(
-            projectId      = projectId.hashCode().toLong(),
+            projectId      = RagProjectId.stableLong(projectId),
             documentNodeId = "knowledge_${tag}_${System.currentTimeMillis()}",
             text           = text
         )
@@ -161,7 +193,7 @@ class ToolExecutor @Inject constructor(
             ?: return ToolResult.Error("Argumento 'projectId' requerido")
         val limit     = args["limit"]?.jsonPrimitive?.intOrNull ?: 5
 
-        val chunks = ragEngine.search(query, projectId.hashCode().toLong(), limit)
+        val chunks = ragEngine.search(query, RagProjectId.stableLong(projectId), limit)
 
         return ToolResult.Success(buildJsonObject {
             put("chunks", buildJsonArray {
@@ -182,7 +214,7 @@ class ToolExecutor @Inject constructor(
             ?: return ToolResult.Error("Argumento 'projectId' requerido")
         val limit     = args["limit"]?.jsonPrimitive?.intOrNull ?: 10
 
-        val chunks = ragEngine.search(query, projectId.hashCode().toLong(), limit)
+        val chunks = ragEngine.search(query, RagProjectId.stableLong(projectId), limit)
 
         return ToolResult.Success(buildJsonObject {
             put("results", buildJsonArray {
@@ -228,7 +260,7 @@ class ToolExecutor @Inject constructor(
                 if (projectId.isNotBlank()) {
                     try {
                         ragEngine.indexDocument(
-                            projectId      = projectId.hashCode().toLong(),
+                            projectId      = RagProjectId.stableLong(projectId),
                             documentNodeId = "research_${topic.hashCode()}_iter$i",
                             text           = searchResult.outputJson
                         )
@@ -304,30 +336,67 @@ class ToolExecutor @Inject constructor(
             ?: return ToolResult.Error("Argumento 'title' requerido")
         val content    = args["content"]?.jsonPrimitive?.content
             ?: return ToolResult.Error("Argumento 'content' requerido")
+        val projectId  = args["projectId"]?.jsonPrimitive?.contentOrNull ?: "general"
         val outputPath = args["outputPath"]?.jsonPrimitive?.contentOrNull
-            ?: "${context.filesDir}/documents/${title.replace(' ', '_')}.docx"
+            ?: defaultProjectFilePath(projectId, title, "docx")
+        val outputFile = FileToolRunner.resolveAppFile(context, outputPath)
+            ?: return ToolResult.Error("Ruta de salida fuera del espacio privado de la app")
 
         return try {
-            val doc  = org.apache.poi.xwpf.usermodel.XWPFDocument()
-            val titlePara = doc.createParagraph()
-            val titleRun  = titlePara.createRun()
-            titleRun.isBold   = true
-            titleRun.fontSize = 16
-            titleRun.setText(title)
-            content.split("\n").forEach { line ->
-                val para = doc.createParagraph()
-                para.createRun().setText(line)
+            val sections: List<Pair<String, String>> = runCatching {
+                args["sections"]?.jsonArray?.mapNotNull { element ->
+                    val obj = element.jsonObject
+                    val sectionTitle = obj["title"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val sectionContent = obj["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    sectionTitle to sectionContent
+                }.orEmpty()
+            }.getOrDefault(emptyList())
+            if (sections.isNotEmpty()) {
+                DocxSimple.writeFenixDocx(outputFile, title, sections)
+            } else {
+                DocxSimple.writeDocx(outputFile, title, content)
             }
-            val file = File(outputPath).also { it.parentFile?.mkdirs() }
-            file.outputStream().use { doc.write(it) }
-            doc.close()
             ToolResult.Success(buildJsonObject {
-                put("path",    file.absolutePath)
+                put("path",    outputFile.absolutePath)
                 put("success", true)
+                put("source", "fenix_docx_zip_xml")
+                put("pages", 0)
+                put("truncated", false)
+                put("preview", content.take(400))
             }.toString())
         } catch (e: Exception) {
             ToolResult.Error("Error creando DOCX: ${e.message}")
         }
+    }
+
+    private suspend fun executeReadDocx(args: JsonObject): ToolResult {
+        val target = (args["path"] ?: args["uri"])?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'path' o 'uri' requerido")
+        return try {
+            val text = docxExtractor.extractText(documentForTarget(target, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+            ToolResult.Success(buildJsonObject {
+                put("success", true)
+                put("text", text)
+                put("preview", text.take(800))
+                put("truncated", text.length > 800)
+                put("source", "docx_zip_xml")
+                put("pages", 0)
+            }.toString())
+        } catch (e: Exception) {
+            ToolResult.Error("Error leyendo DOCX: ${e.message}")
+        }
+    }
+
+    private fun executeEditDocx(args: JsonObject): ToolResult {
+        val baseTitle = args["title"]?.jsonPrimitive?.contentOrNull ?: "documento_editado"
+        val content = args["content"]?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'content' requerido")
+        val projectId = args["projectId"]?.jsonPrimitive?.contentOrNull ?: "general"
+        return executeCreateDocx(buildJsonObject {
+            put("title", "${baseTitle}_editado")
+            put("content", content)
+            put("projectId", projectId)
+        })
     }
 
     private fun executeCreatePdf(args: JsonObject): ToolResult {
@@ -335,45 +404,138 @@ class ToolExecutor @Inject constructor(
             ?: return ToolResult.Error("Argumento 'title' requerido")
         val content    = args["content"]?.jsonPrimitive?.content
             ?: return ToolResult.Error("Argumento 'content' requerido")
+        val projectId  = args["projectId"]?.jsonPrimitive?.contentOrNull ?: "general"
         val outputPath = args["outputPath"]?.jsonPrimitive?.contentOrNull
-            ?: "${context.filesDir}/documents/${title.replace(' ', '_')}.pdf"
+            ?: defaultProjectFilePath(projectId, title, "pdf")
+        val outputFile = FileToolRunner.resolveAppFile(context, outputPath)
+            ?: return ToolResult.Error("Ruta de salida fuera del espacio privado de la app")
 
         return try {
-            val paint    = android.graphics.Paint()
-            val pdfDoc   = android.graphics.pdf.PdfDocument()
-            val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(595, 842, 1).create()
-            val page     = pdfDoc.startPage(pageInfo)
-            val canvas   = page.canvas
-
-            paint.textSize       = 18f
-            paint.isFakeBoldText = true
-            canvas.drawText(title.take(80), 40f, 60f, paint)
-
-            paint.textSize       = 12f
-            paint.isFakeBoldText = false
-            var y = 100f
-            content.split("\n").forEach { line ->
-                if (y < 800f) {
-                    canvas.drawText(line.take(80), 40f, y, paint)
-                    y += 20f
-                }
-            }
-
-            pdfDoc.finishPage(page)
-            val file = File(outputPath).also { it.parentFile?.mkdirs() }
-            file.outputStream().use { pdfDoc.writeTo(it) }
-            pdfDoc.close()
+            outputFile.parentFile?.mkdirs()
+            val pageNumber = writeTextPdf(outputFile, title, content)
 
             ToolResult.Success(buildJsonObject {
-                put("path",  file.absolutePath)
-                put("pages", 1)
+                put("path",  outputFile.absolutePath)
+                put("success", true)
+                put("pages", pageNumber)
+                put("source", "pdfbox_native_text")
+                put("preview", content.take(400))
             }.toString())
         } catch (e: Exception) {
             ToolResult.Error("Error creando PDF: ${e.message}")
         }
     }
 
+    private suspend fun executeReadPdf(args: JsonObject): ToolResult {
+        val target = (args["path"] ?: args["uri"])?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'path' o 'uri' requerido")
+        return try {
+            val text = pdfExtractor.extractText(documentForTarget(target, "application/pdf"))
+            ToolResult.Success(buildJsonObject {
+                put("success", true)
+                put("text", text)
+                put("preview", text.take(800))
+                put("truncated", false)
+            }.toString())
+        } catch (e: Exception) {
+            ToolResult.Error("Error leyendo PDF/OCR: ${e.message}")
+        }
+    }
+
+    private suspend fun executeOcrImage(args: JsonObject): ToolResult {
+        val target = (args["path"] ?: args["uri"])?.jsonPrimitive?.content
+            ?: return ToolResult.Error("Argumento 'path' o 'uri' requerido")
+        var bitmap: Bitmap? = null
+        return try {
+            val uri = if (target.startsWith("content://") || target.startsWith("file://")) Uri.parse(target) else Uri.fromFile(File(target))
+            bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input)
+            } ?: return ToolResult.Error("No se pudo abrir la imagen")
+            val text = recognizeImageText(bitmap!!)
+            ToolResult.Success(buildJsonObject {
+                put("success", true)
+                put("text", text)
+                put("preview", text.take(800))
+                put("truncated", false)
+            }.toString())
+        } catch (e: Exception) {
+            ToolResult.Error("Error OCR imagen: ${e.message}")
+        } finally {
+            bitmap?.recycle()
+        }
+    }
+
+    private suspend fun recognizeImageText(bitmap: Bitmap): String =
+        suspendCancellableCoroutine { continuation ->
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                .addOnSuccessListener { result -> continuation.resume(result.text) }
+                .addOnFailureListener { continuation.resume("") }
+        }
+
+    private fun documentForTarget(target: String, mimeType: String): DocumentNode {
+        val uri = if (target.startsWith("content://") || target.startsWith("file://")) {
+            target
+        } else {
+            Uri.fromFile(File(target)).toString()
+        }
+        return DocumentNode(
+            id = "tool_${System.currentTimeMillis()}",
+            projectId = "tool",
+            name = target.substringAfterLast('/'),
+            uri = uri,
+            mimeType = mimeType,
+            sizeBytes = 0L
+        )
+    }
+
+    private fun defaultProjectFilePath(projectId: String, title: String, extension: String): String {
+        val safeProjectId = projectId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
+        val safeTitle = title.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "archivo" }.take(80)
+        return "${context.filesDir}/projects/$safeProjectId/$safeTitle.$extension"
+    }
+
     // ── Sistema ───────────────────────────────────────────────────────────────
+
+    private fun writeTextPdf(outputFile: File, title: String, content: String): Int {
+        PDFBoxResourceLoader.init(context)
+        PDDocument().use { document ->
+            var pageCount = 0
+            var page = PDPage(PDRectangle.A4)
+            document.addPage(page)
+            pageCount += 1
+            var stream = PDPageContentStream(document, page)
+            var y = 780f
+
+            fun writeLine(text: String, font: PDType1Font, size: Float) {
+                if (y < 64f) {
+                    stream.close()
+                    page = PDPage(PDRectangle.A4)
+                    document.addPage(page)
+                    pageCount += 1
+                    stream = PDPageContentStream(document, page)
+                    y = 780f
+                }
+                stream.beginText()
+                stream.setFont(font, size)
+                stream.newLineAtOffset(56f, y)
+                stream.showText(text)
+                stream.endText()
+                y -= size + 8f
+            }
+
+            writeLine(title.take(90), PDType1Font.HELVETICA_BOLD, 18f)
+            y -= 12f
+            content.lineSequence().forEach { rawLine ->
+                rawLine.chunked(92).ifEmpty { listOf("") }.forEach { line ->
+                    writeLine(line, PDType1Font.HELVETICA, 11f)
+                }
+            }
+            stream.close()
+            document.save(outputFile)
+            return pageCount
+        }
+    }
 
     private suspend fun executeCreateNewTool(args: JsonObject): ToolResult {
         val name        = args["name"]?.jsonPrimitive?.content
@@ -401,7 +563,7 @@ class ToolExecutor @Inject constructor(
                     permissions     = emptyList(),
                     executionType   = ToolExecutionType.JAVASCRIPT,
                     jsBody          = jsBody,
-                    isEnabled       = true,
+                    isEnabled       = false,
                     isUserGenerated = true,
                     createdAt       = System.currentTimeMillis()
                 )
@@ -409,6 +571,8 @@ class ToolExecutor @Inject constructor(
             ToolResult.Success(buildJsonObject {
                 put("toolId",  cleanName)
                 put("success", true)
+                put("enabled", false)
+                put("requiresHumanApproval", true)
             }.toString())
         } catch (e: Exception) {
             ToolResult.Error("Error persistiendo tool '$cleanName': ${e.message}")

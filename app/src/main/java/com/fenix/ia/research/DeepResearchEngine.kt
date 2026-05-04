@@ -1,6 +1,7 @@
 package com.fenix.ia.research
 
 import com.fenix.ia.data.local.objectbox.RagEngine
+import com.fenix.ia.data.local.objectbox.RagProjectId
 import com.fenix.ia.data.remote.LlmInferenceRouter
 import com.fenix.ia.data.remote.LlmMessage
 import com.fenix.ia.data.remote.StreamEvent
@@ -12,11 +13,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.*
+import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -66,9 +68,9 @@ class DeepResearchEngine @Inject constructor(
         projectId: String,
         depth: Int = 2,
         provider: ApiProvider? = null
-    ): Flow<ResearchEvent> = flow {
+    ): Flow<ResearchEvent> = channelFlow {
 
-        emit(ResearchEvent.Started(topic))
+        send(ResearchEvent.Started(topic))
 
         // Sub-queries: el tema general + variaciones que amplían cobertura
         val subQueries = listOf(
@@ -77,16 +79,16 @@ class DeepResearchEngine @Inject constructor(
             "$topic ejemplos prácticos",
             "$topic aplicaciones actuales"
         )
-        emit(ResearchEvent.QueriesReady(subQueries))
+        send(ResearchEvent.QueriesReady(subQueries))
 
-        val allContent = mutableListOf<String>()
-        val allSources = mutableListOf<String>()
+        val allContent = Collections.synchronizedList(mutableListOf<String>())
+        val allSources = Collections.synchronizedList(mutableListOf<String>())
         val semaphore  = Semaphore(2) // máximo 2 requests HTTP simultáneos
 
         val iterations = minOf(depth, MAX_ITERATIONS)
 
-        repeat(iterations) { iter ->
-            emit(ResearchEvent.IterationStarted(iter + 1))
+        for (iter in 0 until iterations) {
+            send(ResearchEvent.IterationStarted(iter + 1))
 
             // Búsqueda y scraping en paralelo con límite de concurrencia
             coroutineScope {
@@ -127,7 +129,7 @@ class DeepResearchEngine @Inject constructor(
                                 // Indexar en RAG local (Blackboard persistente)
                                 try {
                                     rag.indexDocument(
-                                        projectId      = projectId.hashCode().toLong(),
+                                        projectId      = RagProjectId.stableLong(projectId),
                                         documentNodeId = "research_${url.hashCode()}_${iter}",
                                         text           = text
                                     )
@@ -135,7 +137,7 @@ class DeepResearchEngine @Inject constructor(
                                     // No bloquear si falla el indexado
                                 }
 
-                                emit(
+                                send(
                                     ResearchEvent.ContentIndexed(
                                         url     = url,
                                         preview = text.take(150).replace('\n', ' ')
@@ -150,18 +152,28 @@ class DeepResearchEngine @Inject constructor(
             // Cobertura: fracción del target de chars acumulados (0.0 – 1.0)
             val totalChars = allContent.sumOf { it.length }
             val coverage   = minOf(totalChars.toFloat() / (CHARS_PER_UNIT * iterations), 1f)
-            emit(ResearchEvent.IterationDone(iter + 1, coverage))
+            send(ResearchEvent.IterationDone(iter + 1, coverage))
 
             // Convergencia anticipada si ya se alcanzó el target
-            if (coverage >= COVERAGE_TARGET) return@repeat
+            if (coverage >= COVERAGE_TARGET) break
         }
 
         // ── Síntesis final con SINTETIZADOR ──────────────────────────────────
-        emit(ResearchEvent.Synthesizing)
+        send(ResearchEvent.Synthesizing)
 
         val context = allContent
             .joinToString("\n---\n")
             .take(MAX_SYNTHESIS_LEN)
+
+        if (allSources.isEmpty() || context.isBlank()) {
+            send(
+                ResearchEvent.Done(
+                    synthesis = "No se pudo investigar web real con fuentes verificables. Proba de nuevo con otra consulta o revisa la conexion.",
+                    sources = emptyList()
+                )
+            )
+            return@channelFlow
+        }
 
         val synthesisProvider = provider ?: ApiProvider.GROQ
         var synthesis = ""
@@ -179,7 +191,7 @@ class DeepResearchEngine @Inject constructor(
             if (event is StreamEvent.Token) synthesis += event.text
         }
 
-        emit(ResearchEvent.Done(synthesis, allSources.distinct()))
+        send(ResearchEvent.Done(synthesis, allSources.distinct()))
 
     }.flowOn(Dispatchers.IO)
 }

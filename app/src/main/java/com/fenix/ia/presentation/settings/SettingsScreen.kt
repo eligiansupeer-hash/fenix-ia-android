@@ -1,5 +1,6 @@
 package com.fenix.ia.presentation.settings
 
+import android.content.Intent
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,9 +16,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.fenix.ia.BuildConfig
+import com.fenix.ia.R
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
+import com.fenix.ia.audit.AuditLogger
 import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.updater.UpdateIntent
 import com.fenix.ia.updater.UpdateViewModel
@@ -31,7 +38,12 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val notices = remember {
+        context.resources.openRawResource(R.raw.open_source_notices).bufferedReader().use { it.readText() }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
+    var manualObservation by remember { mutableStateOf("") }
 
     LaunchedEffect(updateState.error) {
         updateState.error?.let {
@@ -101,6 +113,39 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            ManualObservationSection(
+                text = manualObservation,
+                onTextChange = { manualObservation = it },
+                onSave = {
+                    val note = manualObservation.trim()
+                    if (note.isNotBlank()) {
+                        AuditLogger.manualObservation(note, mapOf("screen" to "settings"))
+                        manualObservation = ""
+                    }
+                },
+                onExportAudit = {
+                    AuditLogger.createExportZip(context)?.let { file ->
+                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/zip"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Exportar caja negra FENIX IA"))
+                    }
+                }
+            )
+
+            HorizontalDivider()
+
+            AboutAndLicensesSection(
+                version = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                auditMode = BuildConfig.AUDIT_MODE,
+                notices = notices
+            )
+
+            HorizontalDivider()
+
             Text("API Keys", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Las claves se cifran con AES-256-GCM en el hardware TEE del dispositivo.",
@@ -126,6 +171,86 @@ fun SettingsScreen(
 }
 
 // ── Sección IA Local ─────────────────────────────────────────────────────────
+
+@Composable
+private fun ManualObservationSection(
+    text: String,
+    onTextChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onExportAudit: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("Bitacora de prueba", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Escribi aca lo que ves mientras probas. Se guarda junto con la caja negra.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = text,
+                onValueChange = onTextChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 96.dp)
+                    .testTag("manual_observation_field"),
+                label = { Text("Observacion manual") },
+                placeholder = { Text("Ej: toque subir archivo y no paso nada / aparecio error / se cerro la app...") },
+                minLines = 3
+            )
+            Button(
+                onClick = onSave,
+                enabled = text.isNotBlank(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("manual_observation_save")
+            ) {
+                Text("Guardar observacion en caja negra")
+            }
+            OutlinedButton(
+                onClick = onExportAudit,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Exportar caja negra")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutAndLicensesSection(
+    version: String,
+    auditMode: String,
+    notices: String
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Acerca de / Licencias", style = MaterialTheme.typography.titleMedium)
+            Text("Version: $version", style = MaterialTheme.typography.bodySmall)
+            Text("Modo auditoria: $auditMode", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Ocultar notices" else "Ver notices open source")
+            }
+            AnimatedVisibility(expanded) {
+                Text(
+                    notices,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun LocalAiSection(
@@ -167,7 +292,7 @@ private fun LocalAiSection(
             }
 
             Text(
-                "Gemma 2B Q4  ·  ~1.5 GB  ·  Offline total  ·  Privacidad completa",
+                "SmolLM 135M Q8  ·  ~159 MB  ·  Offline total  ·  Privacidad completa",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -222,7 +347,7 @@ private fun LocalAiSection(
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Descargar modelo (~1.5 GB)")
+                        Text("Descargar modelo (~159 MB)")
                     }
                 }
             }
@@ -397,7 +522,10 @@ private fun ApiKeyField(
                     color = if (isConfigured) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurface
                 )
-                TextButton(onClick = { expanded = !expanded }) {
+                TextButton(
+                    onClick = { expanded = !expanded },
+                    modifier = Modifier.testTag("${provider.name.lowercase()}_key_toggle")
+                ) {
                     Text(if (expanded) "Cerrar" else if (isConfigured) "Actualizar" else "Agregar")
                 }
             }
@@ -407,7 +535,9 @@ private fun ApiKeyField(
                     value = keyInput,
                     onValueChange = { keyInput = it },
                     label = { Text("API Key") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("${provider.name.lowercase()}_key_field"),
                     singleLine = true,
                     placeholder = { Text("sk-... / AIza...") }
                 )

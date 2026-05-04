@@ -57,6 +57,7 @@ class UpdateViewModel @Inject constructor(
     private fun downloadAndInstall() {
         viewModelScope.launch {
             val apkUrl = _uiState.value.updateAvailable?.apkUrl
+            val sha256 = _uiState.value.updateAvailable?.sha256.orEmpty()
             if (apkUrl.isNullOrBlank()) {
                 // URL R2 estable — no necesita re-fetch. Si llegamos aquí sin URL,
                 // es un error de flujo (usuario presionó descargar sin haber hecho check).
@@ -70,6 +71,7 @@ class UpdateViewModel @Inject constructor(
             // UpdateChecker.downloadAndInstall() hace resume automático si existe tmpFile.
             when (val result = updateChecker.downloadAndInstall(
                 apkUrl     = apkUrl,
+                expectedSha256 = sha256,
                 onProgress = { pct -> _uiState.update { it.copy(downloadProgress = pct) } }
             )) {
                 is DownloadResult.Success -> _uiState.update {

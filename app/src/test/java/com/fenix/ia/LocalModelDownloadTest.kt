@@ -6,7 +6,7 @@ import org.junit.Test
 
 /**
  * S7 — P1: Confirma la resiliencia de la configuración de Ktor frente a descargas
- * prolongadas de archivos masivos (~1.5 GB modelo Gemma 2B Q4).
+ * prolongadas de archivos grandes (~159 MB modelo SmolLM 135M Q8).
  *
  * Tests puramente unitarios — sin Android, sin Hilt, sin descarga real.
  * Verifica la lógica de configuración y las constantes de timeout.
@@ -17,7 +17,7 @@ class LocalModelDownloadTest {
 
     companion object {
         // Replica las constantes de LocalLlmEngine sin importar Android
-        const val MODEL_FILE = "gemma_2b_q4.bin"
+        const val MODEL_FILE = "SmolLM-135M-Instruct_multi-prefill-seq_q8_ekv1280.task"
         const val MODEL_DIR  = "fenix_models"
         const val MIN_RAM_MB = 3_500L
         const val MIN_VALID_FILE_BYTES = 1_000_000L  // 1 MB mínimo para validar descarga
@@ -48,8 +48,8 @@ class LocalModelDownloadTest {
 
     @Test
     fun `timeout global de 120s seria insuficiente para descargar 1GB a 1MBps`() {
-        // A 1 MB/s, 1.5 GB tarda 1536 segundos → 120s no alcanza
-        val modelSizeBytes = 1_500L * 1024L * 1024L  // 1.5 GB
+        // A 1 MB/s, 159 MB tarda 159 segundos: 120s sigue sin alcanzar.
+        val modelSizeBytes = 159L * 1024L * 1024L
         val speedBytesPerSec = 1024L * 1024L           // 1 MB/s conservador
         val estimatedSeconds = modelSizeBytes / speedBytesPerSec
         val globalTimeoutSec = GLOBAL_TIMEOUT_MS / 1000L
@@ -71,9 +71,9 @@ class LocalModelDownloadTest {
 
     @Test
     fun `nombre de archivo de modelo es consistente`() {
-        assertEquals("gemma_2b_q4.bin", MODEL_FILE)
+        assertEquals("SmolLM-135M-Instruct_multi-prefill-seq_q8_ekv1280.task", MODEL_FILE)
         assertFalse("Nombre de archivo no debe estar vacío", MODEL_FILE.isBlank())
-        assertTrue("Archivo debe tener extensión .bin", MODEL_FILE.endsWith(".bin"))
+        assertTrue("Archivo debe tener extension .task", MODEL_FILE.endsWith(".task"))
     }
 
     @Test

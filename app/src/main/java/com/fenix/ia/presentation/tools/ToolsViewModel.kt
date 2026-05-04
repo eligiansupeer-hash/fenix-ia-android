@@ -106,7 +106,7 @@ class ToolsViewModel @Inject constructor(
                         permissions     = emptyList(),
                         executionType   = ToolExecutionType.JAVASCRIPT,
                         jsBody          = js,
-                        isEnabled       = true,
+                        isEnabled       = false,
                         isUserGenerated = true,
                         createdAt       = System.currentTimeMillis()
                     )

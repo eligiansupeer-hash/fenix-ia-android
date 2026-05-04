@@ -8,4 +8,5 @@ interface MessageRepository {
     suspend fun insertMessage(message: Message)
     suspend fun deleteMessagesInChat(chatId: String)
     suspend fun deleteMessage(messageId: String)
+    suspend fun getAttachmentUris(messageId: String): List<String>
 }

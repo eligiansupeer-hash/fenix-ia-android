@@ -7,23 +7,34 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 private val FenixDark = darkColorScheme(
-    primary = Color(0xFFE8854F),
-    secondary = Color(0xFFB05D2E),
-    background = Color(0xFF121212),
-    surface = Color(0xFF1E1E1E),
-    onPrimary = Color.White,
-    onBackground = Color(0xFFE0E0E0),
-    onSurface = Color(0xFFE0E0E0)
+    primary = Color(0xFFFFB238),
+    secondary = Color(0xFFFF6A1A),
+    tertiary = Color(0xFFE5391D),
+    background = Color(0xFF100908),
+    surface = Color(0xFF1B1110),
+    surfaceVariant = Color(0xFF2A1A18),
+    primaryContainer = Color(0xFF5A220D),
+    secondaryContainer = Color(0xFF3A1810),
+    error = Color(0xFFFF6B5F),
+    onPrimary = Color(0xFF231000),
+    onBackground = Color(0xFFFFE8D0),
+    onSurface = Color(0xFFFFE8D0),
+    onSurfaceVariant = Color(0xFFE8B89A)
 )
 
 private val FenixLight = lightColorScheme(
-    primary = Color(0xFFE8854F),
-    secondary = Color(0xFFB05D2E),
-    background = Color(0xFFF5F5F5),
-    surface = Color.White,
+    primary = Color(0xFFB74312),
+    secondary = Color(0xFFD8651B),
+    tertiary = Color(0xFF7A1D10),
+    background = Color(0xFFFFF8F1),
+    surface = Color(0xFFFFFCF8),
+    surfaceVariant = Color(0xFFFFE2C2),
+    primaryContainer = Color(0xFFFFD1A3),
+    secondaryContainer = Color(0xFFFFE2C2),
     onPrimary = Color.White,
-    onBackground = Color(0xFF212121),
-    onSurface = Color(0xFF212121)
+    onBackground = Color(0xFF24100B),
+    onSurface = Color(0xFF24100B),
+    onSurfaceVariant = Color(0xFF624033)
 )
 
 @Composable

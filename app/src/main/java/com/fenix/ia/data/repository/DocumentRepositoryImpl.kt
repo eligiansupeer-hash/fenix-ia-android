@@ -21,6 +21,11 @@ class DocumentRepositoryImpl @Inject constructor(
             list.map { it.toDomain() }
         }
 
+    override fun getRecentDocuments(limit: Int): Flow<List<DocumentNode>> =
+        documentDao.getRecentDocuments(limit).map { list ->
+            list.map { it.toDomain() }
+        }
+
     override suspend fun insertDocument(document: DocumentNode) {
         documentDao.insertDocument(document.toEntity())
     }
@@ -50,6 +55,8 @@ class DocumentRepositoryImpl @Inject constructor(
         semanticSummary = semanticSummary,
         isIndexed = isIndexed,
         isChecked = isChecked,
+        status = status,
+        errorMessage = errorMessage,
         createdAt = createdAt
     )
 
@@ -63,6 +70,8 @@ class DocumentRepositoryImpl @Inject constructor(
         semanticSummary = semanticSummary,
         isIndexed = isIndexed,
         isChecked = isChecked,
+        status = status,
+        errorMessage = errorMessage,
         createdAt = createdAt
     )
 }

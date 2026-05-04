@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
@@ -50,6 +51,7 @@ fun ChatScreen(
     chatId: String,
     projectId: String,
     onBack: () -> Unit,
+    onOpenMenu: (() -> Unit)? = null,
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -100,7 +102,7 @@ fun ChatScreen(
     }
 
     Scaffold(
-        modifier     = Modifier.imePadding(),
+        modifier     = Modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
@@ -115,8 +117,14 @@ fun ChatScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                    if (onOpenMenu != null) {
+                        IconButton(onClick = onOpenMenu) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                    } else {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                        }
                     }
                 },
                 actions = {
@@ -142,7 +150,11 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            Column {
+            Column(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .imePadding()
+            ) {
                 ProviderSelector(
                     providers = uiState.availableProviders,
                     selected  = uiState.selectedProvider,
@@ -157,6 +169,7 @@ fun ChatScreen(
                 ChatInputBar(
                     isStreaming = uiState.isStreaming,
                     isSending  = uiState.isSending,
+                    hasPendingAttachments = uiState.pendingAttachmentUris.isNotEmpty(),
                     onSend     = { viewModel.processIntent(ChatIntent.SendMessage(it)) },
                     onStop     = { viewModel.processIntent(ChatIntent.StopStreaming) },
                     onAttach   = { filePickerLauncher.launch(arrayOf("application/pdf","image/*","text/plain")) }
@@ -378,6 +391,7 @@ private fun DotsLoadingIndicator() {
 private fun ChatInputBar(
     isStreaming: Boolean,
     isSending: Boolean,
+    hasPendingAttachments: Boolean,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     onAttach: () -> Unit
@@ -390,7 +404,7 @@ private fun ChatInputBar(
             // ↓ bottom = 24.dp sube la caja el equivalente a un emoji por encima de los botones virtuales
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 24.dp),
+                .padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onAttach, enabled = !busy, modifier = Modifier.size(40.dp)) {
@@ -410,9 +424,14 @@ private fun ChatInputBar(
                 IconButton(onClick = onStop) { Icon(Icons.Default.Stop, "Detener") }
             } else {
                 IconButton(
-                    onClick  = { if (input.isNotBlank()) { onSend(input.trim()); input = "" } },
+                    onClick  = {
+                        if (input.isNotBlank() || hasPendingAttachments) {
+                            onSend(input.trim())
+                            input = ""
+                        }
+                    },
                     modifier = Modifier.testTag("send_button"),
-                    enabled  = input.isNotBlank() && !isSending
+                    enabled  = (input.isNotBlank() || hasPendingAttachments) && !isSending
                 ) {
                     Icon(Icons.Default.Send, "Enviar")
                 }

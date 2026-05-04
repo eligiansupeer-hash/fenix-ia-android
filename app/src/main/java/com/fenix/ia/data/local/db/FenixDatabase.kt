@@ -22,9 +22,10 @@ import com.fenix.ia.data.local.db.entities.*
         MessageEntity::class,
         DocumentEntity::class,
         ToolEntity::class,
-        ChatToolEntity::class      // P5
+        ChatToolEntity::class,     // P5
+        MessageAttachmentEntity::class
     ],
-    version = 3,
+    version = 5,
     exportSchema = false
 )
 abstract class FenixDatabase : RoomDatabase() {
@@ -34,4 +35,5 @@ abstract class FenixDatabase : RoomDatabase() {
     abstract fun documentDao(): DocumentDao
     abstract fun toolDao(): ToolDao
     abstract fun chatToolDao(): ChatToolDao   // P5
+    abstract fun messageAttachmentDao(): MessageAttachmentDao
 }

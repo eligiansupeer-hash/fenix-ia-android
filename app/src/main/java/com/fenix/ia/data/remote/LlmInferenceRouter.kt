@@ -1,5 +1,6 @@
 package com.fenix.ia.data.remote
 
+import com.fenix.ia.audit.AuditLogger
 import com.fenix.ia.domain.model.ApiProvider
 import com.fenix.ia.domain.model.Tool
 import com.fenix.ia.domain.repository.ApiKeyRepository
@@ -84,14 +85,22 @@ class LlmInferenceRouter @Inject constructor(
         temperature: Float = 0.7f,
         tools: List<Tool> = emptyList()
     ): Flow<StreamEvent> = flow {
+        val usableMessages = messages.filter { it.content.isNotBlank() }
+        if (usableMessages.none { it.role != "system" }) {
+            AuditLogger.action("llm_empty_request_blocked", mapOf("provider" to provider.name))
+            emit(StreamEvent.Error("No se envio nada a la IA porque el mensaje quedo vacio. Escribi un mensaje y reintenta."))
+            return@flow
+        }
 
         // ── Rama LOCAL ────────────────────────────────────────────────────────
         if (provider == ApiProvider.LOCAL_ON_DEVICE) {
             if (!localLlmEngine.isReady.value) {
+                AuditLogger.action("llm_local_not_ready")
                 emit(StreamEvent.Error("El modelo local no está activo. Activalo en Configuración → IA Local."))
                 return@flow
             }
-            val prompt = buildLocalPrompt(messages, systemPrompt, tools)
+            AuditLogger.action("llm_request_start", mapOf("provider" to provider.name, "tools" to tools.size.toString()))
+            val prompt = buildLocalPrompt(usableMessages, systemPrompt, tools)
             localLlmEngine.generate(prompt).collect { chunk -> emit(StreamEvent.Token(chunk)) }
             emit(StreamEvent.Done)
             return@flow
@@ -99,24 +108,33 @@ class LlmInferenceRouter @Inject constructor(
 
         // ── Rama CLOUD ────────────────────────────────────────────────────────
         val configuredProviders = apiKeyRepository.getConfiguredProviders().first()
+        AuditLogger.action(
+            "llm_request_start",
+            mapOf("provider" to provider.name, "configuredProviders" to configuredProviders.size.toString(), "tools" to tools.size.toString())
+        )
         val resolvedProvider = if (provider in configuredProviders) {
             provider
         } else {
-            val estimatedTokens = estimatePromptTokens(messages, systemPrompt)
+            val estimatedTokens = estimatePromptTokens(usableMessages, systemPrompt)
             val fallback = FALLBACK_ORDER.firstOrNull { candidate ->
                 candidate in configuredProviders &&
                     (PROVIDER_CONTEXT_WINDOW[candidate] ?: 0) >= estimatedTokens
             } ?: FALLBACK_ORDER.firstOrNull { it in configuredProviders }
 
             if (fallback == null) {
+                AuditLogger.action("llm_no_provider_configured", mapOf("requested" to provider.name))
                 emit(StreamEvent.Error("No hay proveedores configurados. Agregá al menos una clave."))
                 return@flow
             }
-            if (fallback != provider) emit(StreamEvent.ProviderFallback(provider, fallback))
+            if (fallback != provider) {
+                AuditLogger.action("llm_provider_fallback", mapOf("from" to provider.name, "to" to fallback.name))
+                emit(StreamEvent.ProviderFallback(provider, fallback))
+            }
             fallback
         }
 
         val apiKey = apiKeyRepository.getDecryptedKey(resolvedProvider) ?: run {
+            AuditLogger.action("llm_key_read_failed", mapOf("provider" to resolvedProvider.name))
             emit(StreamEvent.Error("No se pudo leer la API key de $resolvedProvider"))
             return@flow
         }
@@ -126,8 +144,8 @@ class LlmInferenceRouter @Inject constructor(
         val endpoint = getEndpoint(resolvedProvider, actualModel)
 
         val requestBody = when (resolvedProvider) {
-            ApiProvider.GEMINI -> buildGeminiRequestBody(messages, systemPrompt, temperature, tools)
-            else               -> buildOpenAiRequestBody(messages, systemPrompt, actualModel, temperature, tools)
+            ApiProvider.GEMINI -> buildGeminiRequestBody(usableMessages, systemPrompt, temperature, tools)
+            else               -> buildOpenAiRequestBody(usableMessages, systemPrompt, actualModel, temperature, tools)
         }
 
         var attempt = 0
@@ -147,28 +165,40 @@ class LlmInferenceRouter @Inject constructor(
                 }.execute { response ->
                     when (response.status.value) {
                         429 -> {
-                            val next = FALLBACK_ORDER.firstOrNull { it != resolvedProvider && it in configuredProviders }
-                            if (next != null) emit(StreamEvent.ProviderFallback(resolvedProvider, next))
-                            else emit(StreamEvent.Error("Rate limit alcanzado y no hay fallback disponible."))
+                            AuditLogger.action("llm_rate_limit", mapOf("provider" to resolvedProvider.name))
+                            emit(StreamEvent.Error("El proveedor alcanzo el limite del proyecto o cuota temporal. Cambia de proveedor o proba mas tarde."))
                             success = true; return@execute
                         }
                         401, 403 -> {
+                            AuditLogger.action("llm_auth_error", mapOf("provider" to resolvedProvider.name, "status" to response.status.value.toString()))
                             emit(StreamEvent.Error("API key inválida para $resolvedProvider."))
                             success = true; return@execute
                         }
                         200 -> { /* OK */ }
+                        404 -> {
+                            AuditLogger.action("llm_model_not_found", mapOf("provider" to resolvedProvider.name, "model" to actualModel))
+                            emit(StreamEvent.Error("Modelo no disponible en $resolvedProvider. Revisa el nombre del modelo o elegi uno actual."))
+                            success = true; return@execute
+                        }
+                        503 -> {
+                            AuditLogger.action("llm_unavailable", mapOf("provider" to resolvedProvider.name))
+                            emit(StreamEvent.Error("$resolvedProvider esta con alta demanda temporal. Reintenta en unos minutos o usa otro proveedor."))
+                            success = true; return@execute
+                        }
                         else -> {
+                            AuditLogger.action("llm_http_error", mapOf("provider" to resolvedProvider.name, "status" to response.status.value.toString()))
                             emit(StreamEvent.Error("HTTP ${response.status.value} desde $resolvedProvider: ${response.bodyAsText()}"))
                             return@execute
                         }
                     }
                     val channel = response.bodyAsChannel()
+                    val toolAccumulator = ToolCallAccumulator()
                     while (!channel.isClosedForRead) {
                         val line = channel.readUTF8Line(limit = SSE_LINE_LIMIT) ?: break
                         if (line.startsWith("data: ")) {
                             val data = line.removePrefix("data: ").trim()
                             if (data == "[DONE]") { emit(StreamEvent.Done); success = true; break }
-                            parseStreamDelta(data, resolvedProvider)?.let { token ->
+                            parseStreamDelta(data, resolvedProvider, toolAccumulator)?.let { token ->
                                 if (token.isNotEmpty()) emit(StreamEvent.Token(token))
                             }
                         }
@@ -177,6 +207,7 @@ class LlmInferenceRouter @Inject constructor(
                 }
             } catch (e: IOException) {
                 if (attempt >= MAX_RETRY_ATTEMPTS) {
+                    AuditLogger.error("llm_connection_failed", e, mapOf("provider" to resolvedProvider.name))
                     emit(StreamEvent.Error("Conexión fallida tras $MAX_RETRY_ATTEMPTS intentos: ${e.message}"))
                 } else {
                     delay(1000L * attempt)
@@ -295,7 +326,7 @@ class LlmInferenceRouter @Inject constructor(
 
     // ── Parser SSE delta — P3 ─────────────────────────────────────────────────
 
-    private fun parseStreamDelta(data: String, provider: ApiProvider): String? {
+    private fun parseStreamDelta(data: String, provider: ApiProvider, toolAccumulator: ToolCallAccumulator): String? {
         return try {
             val json = Json { ignoreUnknownKeys = true }.parseToJsonElement(data).jsonObject
             when (provider) {
@@ -312,16 +343,24 @@ class LlmInferenceRouter @Inject constructor(
                     part?.get("text")?.jsonPrimitive?.contentOrNull
                 }
                 else -> {
-                    val delta = json["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("delta")?.jsonObject
+                    val choice = json["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+                    val delta = choice?.get("delta")?.jsonObject
                     // OpenAI tool_calls → etiqueta XML estándar del orquestador
                     if (delta?.containsKey("tool_calls") == true) {
-                        val call = delta["tool_calls"]?.jsonArray?.firstOrNull()?.jsonObject
-                            ?.get("function")?.jsonObject
-                        val name = call?.get("name")?.jsonPrimitive?.content ?: ""
-                        val args = call?.get("arguments")?.jsonPrimitive?.content ?: ""
-                        return if (name.isNotEmpty())
-                            "<tool_call>{\"name\":\"$name\", \"args\":$args}</tool_call>"
-                        else args
+                        delta["tool_calls"]?.jsonArray?.forEach { item ->
+                            val call = item.jsonObject
+                            val index = call["index"]?.jsonPrimitive?.intOrNull ?: 0
+                            val fn = call["function"]?.jsonObject
+                            toolAccumulator.append(
+                                index = index,
+                                namePart = fn?.get("name")?.jsonPrimitive?.contentOrNull,
+                                argsPart = fn?.get("arguments")?.jsonPrimitive?.contentOrNull
+                            )
+                        }
+                        return null
+                    }
+                    if (choice?.get("finish_reason")?.jsonPrimitive?.contentOrNull == "tool_calls") {
+                        return toolAccumulator.toXmlAndClear()
                     }
                     delta?.get("content")?.jsonPrimitive?.contentOrNull
                 }
@@ -336,6 +375,31 @@ class LlmInferenceRouter @Inject constructor(
 
     // ── Endpoints — P2: modelo dinámico ──────────────────────────────────────
 
+    private class ToolCallAccumulator {
+        private data class Partial(
+            val name: StringBuilder = StringBuilder(),
+            val args: StringBuilder = StringBuilder()
+        )
+
+        private val partials = linkedMapOf<Int, Partial>()
+
+        fun append(index: Int, namePart: String?, argsPart: String?) {
+            val partial = partials.getOrPut(index) { Partial() }
+            if (!namePart.isNullOrEmpty()) partial.name.append(namePart)
+            if (!argsPart.isNullOrEmpty()) partial.args.append(argsPart)
+        }
+
+        fun toXmlAndClear(): String {
+            val xml = partials.values.joinToString("") { partial ->
+                val name = partial.name.toString()
+                val args = partial.args.toString().ifBlank { "{}" }
+                if (name.isBlank()) "" else "<tool_call>{\"name\":\"$name\", \"args\":$args}</tool_call>"
+            }
+            partials.clear()
+            return xml
+        }
+    }
+
     internal fun getEndpoint(provider: ApiProvider, model: String): String = when (provider) {
         ApiProvider.GEMINI ->
             // P2: $model variable — ya no hardcodeado como gemini-2.0-flash
@@ -348,7 +412,7 @@ class LlmInferenceRouter @Inject constructor(
     }
 
     internal fun getDefaultModel(provider: ApiProvider): String = when (provider) {
-        ApiProvider.GEMINI          -> "gemini-2.0-flash"
+        ApiProvider.GEMINI          -> "gemini-2.5-flash"
         ApiProvider.GROQ            -> "llama-3.3-70b-versatile"
         ApiProvider.MISTRAL         -> "mistral-large-latest"
         ApiProvider.OPENROUTER      -> "meta-llama/llama-3.3-70b-instruct:free"

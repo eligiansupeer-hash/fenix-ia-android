@@ -2,9 +2,11 @@ package com.fenix.ia.updater
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
+import com.fenix.ia.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.*
 import io.ktor.client.request.*
@@ -18,6 +20,7 @@ import kotlinx.serialization.json.Json
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -113,7 +116,8 @@ class UpdateChecker @Inject constructor(
             newVersion     = meta.versionCode,
             releaseNotes   = meta.notes.take(500),
             apkUrl         = meta.apkUrl,
-            apkSizeBytes   = 0L
+            apkSizeBytes   = 0L,
+            sha256         = meta.sha256.ifBlank { meta.sha }
         )
     }
 
@@ -124,8 +128,12 @@ class UpdateChecker @Inject constructor(
 
     suspend fun downloadAndInstall(
         apkUrl: String,
+        expectedSha256: String,
         onProgress: (Int) -> Unit = {}
     ): DownloadResult = withContext(Dispatchers.IO) {
+        if (expectedSha256.isBlank()) {
+            return@withContext DownloadResult.Error("Actualizacion insegura: version.json no trae sha256.")
+        }
 
         // Hint al GC antes de abrir el canal — importante en 2 GB RAM
         System.gc()
@@ -150,6 +158,7 @@ class UpdateChecker @Inject constructor(
                     status == 416 -> {
                         // Servidor indica que ya tenemos todos los bytes
                         tmpFile.renameTo(apkFile)
+                        validateDownloadedApk(apkFile, expectedSha256)?.let { return@withContext it }
                         onProgress(100)
                         return@withContext launchInstaller(apkFile)
                     }
@@ -193,6 +202,7 @@ class UpdateChecker @Inject constructor(
                 }
 
                 tmpFile.renameTo(apkFile)
+                validateDownloadedApk(apkFile, expectedSha256)?.let { return@withContext it }
                 onProgress(100)
                 return@withContext launchInstaller(apkFile)
 
@@ -227,6 +237,65 @@ class UpdateChecker @Inject constructor(
             DownloadResult.Error("Error instalador: ${e.message}")
         }
     }
+
+    private fun validateDownloadedApk(apkFile: File, expectedSha256: String): DownloadResult.Error? {
+        val actualSha = sha256(apkFile)
+        if (!actualSha.equals(expectedSha256.trim(), ignoreCase = true)) {
+            apkFile.delete()
+            return DownloadResult.Error("Actualizacion bloqueada: hash SHA-256 no coincide.")
+        }
+
+        val expectedCert = BuildConfig.EXPECTED_APK_CERT_SHA256.trim()
+        if (expectedCert.isBlank()) {
+            apkFile.delete()
+            return DownloadResult.Error("Actualizacion bloqueada: falta configurar fingerprint de firma release.")
+        }
+        if (expectedCert != "DEBUG_TRUST_CURRENT") {
+            val actualCert = apkSigningCertificateSha256(apkFile)
+                ?: return DownloadResult.Error("Actualizacion bloqueada: no se pudo leer la firma del APK.")
+            if (!actualCert.equals(expectedCert, ignoreCase = true)) {
+                apkFile.delete()
+                return DownloadResult.Error("Actualizacion bloqueada: firma del APK no confiable.")
+            }
+        }
+        return null
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(CHUNK_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun apkSigningCertificateSha256(apkFile: File): String? {
+        val info: PackageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            context.packageManager.getPackageArchiveInfo(
+                apkFile.absolutePath,
+                android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            ) ?: return null
+        } else {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageArchiveInfo(
+                apkFile.absolutePath,
+                android.content.pm.PackageManager.GET_SIGNATURES
+            ) ?: return null
+        }
+        val certBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+        } else {
+            @Suppress("DEPRECATION")
+            info.signatures?.firstOrNull()?.toByteArray()
+        } ?: return null
+        val digest = MessageDigest.getInstance("SHA-256").digest(certBytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -239,7 +308,8 @@ private data class R2VersionMeta(
     val versionName: String,
     val apkUrl: String,
     val notes: String = "",
-    val sha: String   = ""
+    val sha: String   = "",
+    val sha256: String = ""
 )
 
 sealed class UpdateResult {
@@ -248,7 +318,8 @@ sealed class UpdateResult {
         val newVersion: Int,
         val releaseNotes: String,
         val apkUrl: String,
-        val apkSizeBytes: Long
+        val apkSizeBytes: Long,
+        val sha256: String
     ) : UpdateResult()
     data class UpToDate(val currentVersion: Int, val remoteVersion: Int) : UpdateResult()
     object NoReleases : UpdateResult()

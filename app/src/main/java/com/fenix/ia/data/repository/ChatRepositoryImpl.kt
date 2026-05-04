@@ -17,6 +17,9 @@ class ChatRepositoryImpl @Inject constructor(
     override fun getChatsByProject(projectId: String): Flow<List<Chat>> =
         dao.getChatsByProject(projectId).map { entities -> entities.map { it.toDomain() } }
 
+    override fun getRecentChats(limit: Int): Flow<List<Chat>> =
+        dao.getRecentChats(limit).map { entities -> entities.map { it.toDomain() } }
+
     // P4: Chats globales (projectId IS NULL en BD → "" en dominio)
     fun getGeneralChats(): Flow<List<Chat>> =
         dao.getGeneralChats().map { entities -> entities.map { it.toDomain() } }

@@ -12,6 +12,9 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.fenix.ia.domain.model.DocumentNode
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -60,6 +63,10 @@ class PdfTextExtractor(private val context: Context) {
         // Solo llegamos aquí si el PDF es escaneado (sin texto embebido suficiente)
         Log.d(TAG, "'${document.name}': texto nativo vacío o insuficiente, iniciando OCR...")
         val ocrText = tryExtractOcrText(document)
+        if (ocrText.isBlank() && nativeText.isNotBlank()) {
+            Log.d(TAG, "'${document.name}': usando texto nativo corto (${nativeText.length} chars)")
+            return@withContext nativeText
+        }
 
         Log.d(TAG, "'${document.name}': ${ocrText.length} chars extraídos (OCR)")
         ocrText
@@ -70,7 +77,7 @@ class PdfTextExtractor(private val context: Context) {
     private fun tryExtractNativeText(document: DocumentNode): String {
         return try {
             val uri = document.uri.toUri()
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            openDocumentInputStream(document)?.use { inputStream ->
                 PDDocument.load(inputStream).use { pdDocument ->
                     if (pdDocument.isEncrypted) {
                         Log.w(TAG, "'${document.name}': PDF encriptado, saltando fase 1")
@@ -124,6 +131,15 @@ class PdfTextExtractor(private val context: Context) {
         }
 
         return sb.toString()
+    }
+
+    private fun openDocumentInputStream(document: DocumentNode): InputStream? {
+        val uri = document.uri.toUri()
+        return if (uri.scheme == "file") {
+            FileInputStream(File(uri.path.orEmpty()))
+        } else {
+            context.contentResolver.openInputStream(uri)
+        }
     }
 
     /**

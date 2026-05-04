@@ -14,12 +14,14 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -37,6 +39,7 @@ fun ProjectDetailScreen(
     onNavigateToTools: () -> Unit = {},
     onNavigateToArtifacts: () -> Unit = {},
     onBack: () -> Unit,
+    onOpenMenu: (() -> Unit)? = null,
     viewModel: ProjectDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -67,8 +70,14 @@ fun ProjectDetailScreen(
             TopAppBar(
                 title = { Text(uiState.projectName.ifBlank { "Proyecto" }) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                    if (onOpenMenu != null) {
+                        IconButton(onClick = onOpenMenu) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                    } else {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                        }
                     }
                 },
                 actions = {
@@ -119,7 +128,8 @@ fun ProjectDetailScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .testTag("document_tree"),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -241,13 +251,12 @@ private fun DocumentCard(document: DocumentNode, onToggle: () -> Unit, onDelete:
                     style      = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
-                if (document.semanticSummary.isNotBlank()) {
-                    Text(
-                        text  = document.semanticSummary.take(80),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
+                Text(
+                    text  = documentStatusText(document),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (document.status == "error") MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
             }
             IconButton(onClick = onDelete) {
                 Icon(
@@ -259,3 +268,12 @@ private fun DocumentCard(document: DocumentNode, onToggle: () -> Unit, onDelete:
         }
     }
 }
+
+private fun documentStatusText(document: DocumentNode): String =
+    when (document.status) {
+        "processing" -> "Procesando..."
+        "indexed" -> document.semanticSummary.ifBlank { "Indexado" }
+        "no_text" -> document.semanticSummary.ifBlank { "Sin texto extraible" }
+        "error" -> document.errorMessage.ifBlank { "Error al procesar" }.take(120)
+        else -> document.semanticSummary.ifBlank { "Pendiente" }
+    }

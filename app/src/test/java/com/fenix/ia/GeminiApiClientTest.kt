@@ -28,7 +28,7 @@ class GeminiApiClientTest {
     }
 
     private fun getDefaultModel(provider: ApiProvider): String = when (provider) {
-        ApiProvider.GEMINI          -> "gemini-2.0-flash"
+        ApiProvider.GEMINI          -> "gemini-2.5-flash"
         ApiProvider.GROQ            -> "llama-3.3-70b-versatile"
         ApiProvider.MISTRAL         -> "mistral-large-latest"
         ApiProvider.OPENROUTER      -> "meta-llama/llama-3.3-70b-instruct:free"
@@ -47,7 +47,7 @@ class GeminiApiClientTest {
 
     @Test
     fun `endpoint Gemini apunta a v1beta con alt=sse`() {
-        val url = getEndpoint(ApiProvider.GEMINI, "gemini-2.0-flash")
+        val url = getEndpoint(ApiProvider.GEMINI, "gemini-2.5-flash")
         assertTrue("URI debe usar v1beta", url.contains("v1beta"))
         assertTrue("URI debe incluir alt=sse para streaming", url.contains("alt=sse"))
     }
@@ -57,7 +57,7 @@ class GeminiApiClientTest {
         val model = getDefaultModel(ApiProvider.GEMINI)
         val url = getEndpoint(ApiProvider.GEMINI, model)
         assertTrue("URI debe contener streamGenerateContent", url.contains("streamGenerateContent"))
-        assertEquals("Modelo por defecto debe ser gemini-2.0-flash", "gemini-2.0-flash", model)
+        assertEquals("Modelo por defecto debe ser gemini-2.5-flash", "gemini-2.5-flash", model)
     }
 
     @Test

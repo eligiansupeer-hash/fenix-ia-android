@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface DocumentRepository {
     fun getDocumentsByProject(projectId: String): Flow<List<DocumentNode>>
+    fun getRecentDocuments(limit: Int = 30): Flow<List<DocumentNode>>
     suspend fun insertDocument(document: DocumentNode)
     suspend fun deleteDocument(documentId: String)
     suspend fun updateCheckpoint(documentId: String, isChecked: Boolean)

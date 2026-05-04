@@ -3,6 +3,7 @@ package com.fenix.ia
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.fenix.ia.audit.AuditLogger
 import com.fenix.ia.tools.ToolSeeder
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +22,7 @@ class FenixApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        AuditLogger.install(this)
         CoroutineScope(Dispatchers.IO).launch {
             toolSeeder.seedIfEmpty()
         }
